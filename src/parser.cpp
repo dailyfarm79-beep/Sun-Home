@@ -2198,6 +2198,35 @@ private:
         if (name == "write_text" || name == "append_text") {
             throw ParseError(line_, "io." + name + " is a statement, not an expression");
         }
+        if (name == "createdir") {
+            const auto supplied = parse_named_call_arguments();
+            if (supplied.empty() || supplied.size() > 2 ||
+                supplied[0].name || supplied[0].unpack_positional ||
+                supplied[0].unpack_keyword ||
+                supplied[0].value.type != Type::string) {
+                throw ParseError(line_,
+                                 "io.createdir expects a string path and optional exist=\"ok\" or exist=\"no\"");
+            }
+            auto exist = make_expr_value(
+                Type::string, cpp_string("ok"),
+                make_expression(Expression::Kind::string_literal, Type::string, "ok"),
+                "ok");
+            if (supplied.size() == 2) {
+                if (supplied[1].name != std::optional<std::string>("exist") ||
+                    supplied[1].unpack_positional || supplied[1].unpack_keyword ||
+                    supplied[1].value.type != Type::string) {
+                    throw ParseError(line_,
+                                     "io.createdir accepts only the named string argument exist");
+                }
+                exist = supplied[1].value;
+            }
+            return make_expr_value(
+                Type::boolean,
+                "sun_io_createdir(" + supplied[0].value.cpp + ", " + exist.cpp + ")",
+                make_expression(Expression::Kind::call, Type::boolean,
+                                "sun_io_createdir",
+                                {supplied[0].value.ast, exist.ast}));
+        }
         std::vector<ExprValue> arguments;
         if (!accept(")")) {
             do {

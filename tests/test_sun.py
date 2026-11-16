@@ -1672,6 +1672,50 @@ class SunCompilerTests(unittest.TestCase):
             "true\ntrue\n13\n[first, second]\ntrue\nfalse\ntrue\n",
         )
 
+    def test_io_createdir_exist_modes_and_recursive_creation(self):
+        directory = WORK / "createdir-root" / "nested"
+        file_path = directory / "existing.txt"
+        result = self.invoke(
+            "io-createdir.su",
+            "import io\n"
+            f'let directory: string = "{directory}"\n'
+            f'let file_path: string = "{file_path}"\n'
+            "print(io.createdir(directory))\n"
+            'print(io.createdir(directory, exist="ok"))\n'
+            "try:\n"
+            '    let denied: bool = io.createdir(directory, exist="no")\n'
+            "catch error:\n"
+            "    print(error)\n"
+            "end\n"
+            'io.write_text(file_path, "file")\n'
+            "try:\n"
+            '    let not_directory: bool = io.createdir(file_path, exist="ok")\n'
+            "catch error:\n"
+            "    print(error)\n"
+            "end\n"
+            "try:\n"
+            '    let invalid: bool = io.createdir(directory, exist="maybe")\n'
+            "catch error:\n"
+            "    print(error)\n"
+            "end\n"
+            "print(io.is_directory(directory))\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "io-createdir")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(executable.stdout.splitlines()[0:2], ["true", "false"])
+        self.assertIn("io.createdir directory already exists", executable.stdout)
+        self.assertIn("io.createdir path exists and is not a directory", executable.stdout)
+        self.assertIn("io.createdir exist must be 'ok' or 'no'", executable.stdout)
+        self.assertTrue(executable.stdout.endswith("true\n"))
+
     def test_io_requires_import_and_reports_read_errors(self):
         missing_import = self.invoke(
             "io-missing-import.su",
@@ -1732,6 +1776,33 @@ class SunCompilerTests(unittest.TestCase):
         self.assertEqual(executable.returncode, 0, executable.stderr)
         self.assertEqual(executable.stdout, "first\nupdated\n\n")
         self.assertEqual(target.read_bytes(), b"first\nupdated\n")
+
+    def test_io_open_append_mode_preserves_and_creates_file(self):
+        target = WORK / "io-append.txt"
+        result = self.invoke(
+            "io-append.su",
+            "import io\n"
+            f'let path: string = "{target}"\n'
+            "with open(path, \"a\") as output:\n"
+            '    io.write(output, "first\\n")\n'
+            "end\n"
+            "let handle: int = open(path, \"a\")\n"
+            'write(handle, "second\\n")\n'
+            "close(handle)\n"
+            "print(io.read_text(path))\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "io-append")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(executable.stdout, "first\nsecond\n\n")
+        self.assertEqual(target.read_bytes(), b"first\nsecond\n")
 
     def test_json_loads_dumps_nested_access_and_assignment(self):
         result = self.invoke(

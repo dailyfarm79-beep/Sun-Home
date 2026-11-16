@@ -763,17 +763,27 @@ caminho existe. `io.read_lines(path)` devolve as linhas como `list[string]`;
 algo foi criado; `io.remove(path)` remove um arquivo ou diretorio vazio e
 retorna se removeu algo; `io.file_size(path)` retorna o tamanho em bytes como
 `int`.
+`io.createdir(path, exist="ok")` tambem cria diretorios e seus pais, retornando
+`true` se criou o destino e `false` se ele ja era um diretorio. Com
+`exist="no"`, a chamada gera erro se o destino ja existir; um caminho existente
+que nao seja diretorio sempre gera erro. O argumento `exist` aceita somente
+`"ok"` ou `"no"` e pode ser omitido para usar `"ok"`.
 `open(path, mode)` (ou `io.open`) retorna um handle que pode ser usado com
 `read(handle)`, `io.read(handle)`, `write(handle, contents)`/`io.write` e
 `close(handle)`/`io.close`. Os modos suportados sao `r` (leitura), `w`
-(escrita truncada), `rb` (leitura binaria, devolvida como `string`) e `pw`
-(atualizacao de uma linha existente):
+(escrita truncada), `a` (acrescenta ao final e cria o arquivo se necessario),
+`rb` (leitura binaria, devolvida como `string`) e `pw` (atualizacao de uma
+linha existente). `io.write` aceita handles abertos em `w` ou `a`:
 
 ```sun
 import io
 
 with open("notes.txt", "w") as file:
     io.write(file, "Primeira linha\nSegunda linha\n")
+end
+
+with open("notes.txt", "a") as file:
+    io.write(file, "Linha acrescentada\n")
 end
 
 let file: int = open("notes.txt", "pw")

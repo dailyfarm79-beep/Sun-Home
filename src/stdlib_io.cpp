@@ -22,8 +22,9 @@ SunFile& sun_io_file(std::int64_t handle) {
 }
 
 std::int64_t sun_io_open(const std::string& path, const std::string& mode) {
-    if (mode != "r" && mode != "w" && mode != "rb" && mode != "pw") {
-        throw SunRuntimeError("io.open mode must be 'r', 'w', 'rb', or 'pw'");
+    if (mode != "r" && mode != "w" && mode != "a" &&
+        mode != "rb" && mode != "pw") {
+        throw SunRuntimeError("io.open mode must be 'r', 'w', 'a', 'rb', or 'pw'");
     }
     auto file = std::make_unique<SunFile>();
     file->path = path;
@@ -32,6 +33,7 @@ std::int64_t sun_io_open(const std::string& path, const std::string& mode) {
     if (mode == "r") flags = std::ios::in;
     else if (mode == "rb") flags = std::ios::in | std::ios::binary;
     else if (mode == "w") flags = std::ios::out | std::ios::trunc;
+    else if (mode == "a") flags = std::ios::out | std::ios::app;
     else flags = std::ios::in | std::ios::out | std::ios::binary;
     file->stream.open(path, flags);
     if (!file->stream) {
@@ -61,8 +63,8 @@ std::string sun_io_read(std::int64_t handle) {
 
 void sun_io_write(std::int64_t handle, const std::string& contents) {
     auto& file = sun_io_file(handle);
-    if (file.mode != "w") {
-        throw SunRuntimeError("io.write requires a file opened in 'w' mode");
+    if (file.mode != "w" && file.mode != "a") {
+        throw SunRuntimeError("io.write requires a file opened in 'w' or 'a' mode");
     }
     file.stream.write(contents.data(), static_cast<std::streamsize>(contents.size()));
     file.stream.flush();
@@ -231,6 +233,62 @@ bool sun_io_create_directories(const std::string& path) {
                               error.message());
     }
     return created;
+}
+
+bool sun_io_createdir(const std::string& path, const std::string& exist) {
+    if (exist != "ok" && exist != "no") {
+        throw SunRuntimeError("io.createdir exist must be 'ok' or 'no'");
+    }
+
+    std::error_code error;
+    const bool already_exists = std::filesystem::exists(path, error);
+    if (error) {
+        throw SunRuntimeError("io.createdir failed for '" + path + "': " +
+                              error.message());
+    }
+    if (already_exists) {
+        const bool is_directory = std::filesystem::is_directory(path, error);
+        if (error) {
+            throw SunRuntimeError("io.createdir failed for '" + path + "': " +
+                                  error.message());
+        }
+        if (!is_directory) {
+            throw SunRuntimeError("io.createdir path exists and is not a directory: '" +
+                                  path + "'");
+        }
+        if (exist == "no") {
+            throw SunRuntimeError("io.createdir directory already exists: '" + path + "'");
+        }
+        return false;
+    }
+
+    const bool created = std::filesystem::create_directories(path, error);
+    if (error) {
+        if (exist == "ok") {
+            std::error_code directory_error;
+            if (std::filesystem::is_directory(path, directory_error) &&
+                !directory_error) {
+                return false;
+            }
+        }
+        throw SunRuntimeError("io.createdir could not create directory '" + path +
+                              "': " + error.message());
+    }
+    if (created) return true;
+
+    const bool is_directory = std::filesystem::is_directory(path, error);
+    if (error) {
+        throw SunRuntimeError("io.createdir failed for '" + path + "': " +
+                              error.message());
+    }
+    if (!is_directory) {
+        throw SunRuntimeError("io.createdir path exists and is not a directory: '" +
+                              path + "'");
+    }
+    if (exist == "no") {
+        throw SunRuntimeError("io.createdir directory already exists: '" + path + "'");
+    }
+    return false;
 }
 
 std::int64_t sun_io_file_size(const std::string& path) {

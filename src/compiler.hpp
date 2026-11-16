@@ -26,6 +26,7 @@ enum class Keyword {
     match_,
     case_,
     try_,
+    with_,
     catch_,
     except_,
     finally_,
@@ -55,6 +56,7 @@ struct Type {
         region,
         integer,
         character,
+        json,
         list_number,
         list_integer,
         list_string,
@@ -252,12 +254,20 @@ struct TryCatchStatement {
     std::optional<Block> finally_body;
 };
 
+struct WithOpenStatement {
+    std::string guard_name;
+    std::string handle_name;
+    std::string path;
+    std::string mode;
+    Block body;
+};
+
 struct Statement {
     using Node = std::variant<RawStatement, PrintStatement, PrintColorStatement,
                               DictionaryAssignmentStatement, AssertStatement, RaiseStatement,
                               IfStatement, MatchStatement, LocalFunctionStatement,
                               WhileStatement, RangeForStatement,
-                              ForEachStatement, TryCatchStatement>;
+                              ForEachStatement, TryCatchStatement, WithOpenStatement>;
 
     Node node;
     std::size_t line;
@@ -306,6 +316,7 @@ struct Program {
     bool math_imported = false;
     bool memory_imported = false;
     bool io_imported = false;
+    bool json_imported = false;
     bool sys_imported = false;
 };
 

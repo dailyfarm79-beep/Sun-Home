@@ -109,15 +109,15 @@
     },
     {
       "name": "storage.type.sun",
-      "match": "\\b(?:string|str|number|int|bool|char|region|list|dict|tuple)\\b"
+      "match": "\\b(?:string|str|number|int|bool|char|region|json|list|dict|tuple)\\b"
     },
     {
       "name": "support.module.sun",
-      "match": "\\b(?:math|io|sys|memory)\\b(?=\\.)"
+      "match": "\\b(?:math|io|sys|memory|json)\\b(?=\\.)"
     },
     {
       "name": "support.function.builtin.sun",
-      "match": "\\b(?:print|input|len|sum|all|any|min|max|round|abs|floor|ceil|trunc|istype|assert|range)\\b(?=\\s*\\()"
+      "match": "\\b(?:print|input|len|sum|all|any|min|max|round|abs|floor|ceil|trunc|istype|assert|range|open|read|write|close|pw)\\b(?=\\s*\\()"
     },
     {
       "name": "support.function.math.sun",
@@ -151,7 +151,7 @@
     },
     {
       "name": "keyword.control.sun",
-      "match": "\\b(?:def|class|struct|enum|if|elif|else|while|for|in|match|case|try|catch|except|finally|export|let|const|raise|return|break|continue|import|end|and|or|not)\\b"
+      "match": "\\b(?:def|class|struct|enum|if|elif|else|while|for|in|match|case|try|with|catch|except|finally|export|let|const|raise|return|break|continue|import|end|and|or|not)\\b"
     },
     {
       "name": "keyword.other.sun",

@@ -1,5 +1,6 @@
 #include "compiler.hpp"
 #include "stdlib_io.hpp"
+#include "stdlib_json.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -244,6 +245,16 @@ void emit_statement(std::ostream& out, const Statement& statement, std::size_t s
         }
         emit_block(out, loop->body, spaces + 4);
         out << prefix << "}\n";
+    } else if (const auto* opened = std::get_if<WithOpenStatement>(&statement.node)) {
+        out << prefix << "{\n"
+            << std::string(spaces + 4, ' ') << "SunFileGuard "
+            << opened->guard_name << "(sun_io_open(" << opened->path << ", "
+            << opened->mode << "));\n"
+            << std::string(spaces + 4, ' ') << "const std::int64_t "
+            << opened->handle_name << " = " << opened->guard_name
+            << ".handle();\n";
+        emit_block(out, opened->body, spaces + 4);
+        out << prefix << "}\n";
     } else if (const auto* attempt = std::get_if<TryCatchStatement>(&statement.node)) {
         if (attempt->finally_body) {
             out << prefix << "{\n"
@@ -354,6 +365,7 @@ std::string transpile(const Program& program) {
     if (program.io_imported) {
         out << "#include <filesystem>\n#include <fstream>\n#include <iterator>\n";
     }
+    if (program.json_imported) out << "#include <charconv>\n#include <iomanip>\n";
     out << R"cpp(
 class SunFinallyGuard {
 public:
@@ -729,6 +741,7 @@ T sun_list_pop(std::vector<T>& values, double index) {
 }
 )cpp";
     if (program.io_imported) out << io_runtime_cpp();
+    if (program.json_imported) out << json_runtime_cpp();
     if (program.memory_imported) {
         out << R"cpp(
 class SunMemoryRegion {

@@ -17,6 +17,7 @@ Keyword keyword_from_word(const std::string& word) {
     if (word == "match") return Keyword::match_;
     if (word == "case") return Keyword::case_;
     if (word == "try") return Keyword::try_;
+    if (word == "with") return Keyword::with_;
     if (word == "catch") return Keyword::catch_;
     if (word == "except") return Keyword::except_;
     if (word == "finally") return Keyword::finally_;

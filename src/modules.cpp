@@ -30,6 +30,7 @@ struct LoadedModule {
     bool math = false;
     bool memory = false;
     bool io = false;
+    bool json = false;
     bool sys = false;
 };
 
@@ -172,7 +173,8 @@ bool is_block_start(const std::string& text) {
     const auto keyword = keyword_at_start(text);
     return !function_name(text).empty() || keyword == Keyword::try_ ||
            keyword == Keyword::if_ || keyword == Keyword::while_ ||
-           keyword == Keyword::for_ || keyword == Keyword::match_;
+           keyword == Keyword::for_ || keyword == Keyword::match_ ||
+           keyword == Keyword::with_;
 }
 
 LoadedModule load_module(const fs::path& module_path, const fs::path& project_root,
@@ -197,6 +199,7 @@ LoadedModule load_module(const fs::path& module_path, const fs::path& project_ro
     bool math = false;
     bool memory = false;
     bool io = false;
+    bool json = false;
     bool sys = false;
     std::size_t first_content = 0;
     while (first_content < lines.size()) {
@@ -210,6 +213,7 @@ LoadedModule load_module(const fs::path& module_path, const fs::path& project_ro
             if (spec == "math") math = true;
             else if (spec == "memory") memory = true;
             else if (spec == "io") io = true;
+            else if (spec == "json") json = true;
             else if (spec == "sys") imports.push_back({"sys", "sys", true});
             else if (spec.rfind("local/", 0) == 0) {
                 const auto as = spec.find(" as ");
@@ -272,6 +276,7 @@ LoadedModule load_module(const fs::path& module_path, const fs::path& project_ro
         math = math || dependency.math;
         memory = memory || dependency.memory;
         io = io || dependency.io;
+        json = json || dependency.json;
         sys = sys || dependency.sys;
         dependencies << dependency.source;
     }
@@ -381,6 +386,7 @@ LoadedModule load_module(const fs::path& module_path, const fs::path& project_ro
     loaded.math = math;
     loaded.memory = memory;
     loaded.io = io;
+    loaded.json = json;
     loaded.sys = sys;
     loading.erase(canonical);
     cache.emplace(canonical, loaded);
@@ -402,6 +408,7 @@ std::string load_project_source(const std::filesystem::path& source_path) {
     bool math = false;
     bool memory = false;
     bool io = false;
+    bool json = false;
     bool sys = false;
     std::size_t first_content = 0;
     while (first_content < lines.size()) {
@@ -415,6 +422,7 @@ std::string load_project_source(const std::filesystem::path& source_path) {
             if (spec == "math") math = true;
             else if (spec == "memory") memory = true;
             else if (spec == "io") io = true;
+            else if (spec == "json") json = true;
             else if (spec == "sys") imports.push_back({"sys", "sys", true});
             else if (spec.rfind("local/", 0) == 0) {
                 const auto as = spec.find(" as ");
@@ -470,6 +478,7 @@ std::string load_project_source(const std::filesystem::path& source_path) {
         math = math || module.math;
         memory = memory || module.memory;
         io = io || module.io;
+        json = json || module.json;
         sys = sys || module.sys;
         modules << module.source;
     }
@@ -481,6 +490,7 @@ std::string load_project_source(const std::filesystem::path& source_path) {
     if (math) result << "import math\n";
     if (memory) result << "import memory\n";
     if (io) result << "import io\n";
+    if (json) result << "import json\n";
     if (sys) result << "import sys\n";
     result << modules.str() << rewritten_main;
     return result.str();

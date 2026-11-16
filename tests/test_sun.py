@@ -1701,6 +1701,128 @@ class SunCompilerTests(unittest.TestCase):
         self.assertEqual(executable.returncode, 0, executable.stderr)
         self.assertIn("io.read_text could not open file", executable.stdout)
 
+    def test_io_open_with_close_binary_and_partial_line_write(self):
+        target = WORK / "io-open.txt"
+        result = self.invoke(
+            "io-open.su",
+            "import io\n"
+            f'let path: string = "{target}"\n'
+            "with open(path, \"w\") as output:\n"
+            '    io.write(output, "first\\nsecond\\n")\n'
+            "end\n"
+            "let handle: int = io.open(path, \"pw\")\n"
+            'io.pw(handle, int(2), "updated")\n'
+            "io.close(handle)\n"
+            "def read_file(path: string): string\n"
+            "    with open(path, \"rb\") as input_file:\n"
+            "        return io.read(input_file)\n"
+            "    end\n"
+            "end\n"
+            "print(read_file(path))\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "io-open")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(executable.stdout, "first\nupdated\n\n")
+        self.assertEqual(target.read_bytes(), b"first\nupdated\n")
+
+    def test_json_loads_dumps_nested_access_and_assignment(self):
+        result = self.invoke(
+            "json.su",
+            "import json\n"
+            'let data: json = json.loads("{\\"profile\\":{\\"name\\":\\"Ada\\"},\\"items\\":[1,true,null]}")\n'
+            'let fixed: json = json.loads("{\\"value\\":3}")\n'
+            'print(fixed["value"].as_int())\n'
+            'print(data["profile"]["name"].as_string())\n'
+            'print(data["items"][0].as_int())\n'
+            'print(data["items"][1].as_bool())\n'
+            'data["profile"]["name"] = "Grace"\n'
+            'data["items"][0] = int(2)\n'
+            "print(json.dumps(data))\n"
+            'let labels: dict[string, string] = {"name": "Ada"}\n'
+            "print(json.dumps(labels))\n"
+            "let values: list[int] = [int(1), int(2)]\n"
+            "print(json.dumps(values))\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "json")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(
+            executable.stdout,
+            '3\nAda\n1\ntrue\n{"items":[2,true,null],"profile":{"name":"Grace"}}\n'
+            '{"name":"Ada"}\n[1,2]\n',
+        )
+
+    def test_json_requires_import_and_reports_invalid_json(self):
+        missing_import = self.invoke(
+            "json-missing-import.su",
+            'let value: json = json.loads("null")\n',
+        )
+        self.assertNotEqual(missing_import.returncode, 0)
+        self.assertIn("the json type requires 'import json'", missing_import.stderr)
+
+        result = self.invoke(
+            "json-invalid.su",
+            "import json\n"
+            'try:\n'
+            '    let value: json = json.loads("{invalid}")\n'
+            "catch error:\n"
+            "    print(error)\n"
+            "end\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "json-invalid")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertIn("json.loads", executable.stdout)
+
+    def test_local_modules_can_import_stdlib_json(self):
+        helper = WORK / "json_reader.su"
+        helper.write_text(
+            "import json\n"
+            "export def read_value(): json\n"
+            '    return json.loads("{\\"value\\":7}")\n'
+            "end\n",
+            encoding="utf-8",
+        )
+        result = self.invoke(
+            "json-local.su",
+            "import local/json_reader as reader\n"
+            "let value: json = reader.read_value()\n"
+            'print(value["value"].as_int())\n',
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "json-local")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(executable.stdout, "7\n")
+
     def test_memory_requires_import_and_rejects_regions_as_text(self):
         missing_import = self.invoke(
             "memory-missing-import.su",

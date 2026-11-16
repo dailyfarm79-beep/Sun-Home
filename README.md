@@ -47,7 +47,9 @@ em [HOWUSE.md](HOWUSE.md).
 - `import memory` com regioes de bytes gerenciadas, limites de alocacao e
   verificacao de bounds para leitura e escrita.
 - `import io` para leitura de texto/linhas, escrita, diretorios e metadados de
-  arquivos.
+  arquivos, handles com `open`/`close` e blocos `with open`.
+- `import json` para `json.loads`/`json.dumps` e valores JSON dinamicos com
+  objetos e arrays aninhados.
 - `import sys` para argumentos, ambiente, diretorio atual, plataforma e saida.
 - Imports de modulos locais com alias, structs, enums e classes com
   campos, metodos, `init` e heranca simples; `export def` controla a API publica

@@ -763,11 +763,60 @@ caminho existe. `io.read_lines(path)` devolve as linhas como `list[string]`;
 algo foi criado; `io.remove(path)` remove um arquivo ou diretorio vazio e
 retorna se removeu algo; `io.file_size(path)` retorna o tamanho em bytes como
 `int`.
+`open(path, mode)` (ou `io.open`) retorna um handle que pode ser usado com
+`read(handle)`, `io.read(handle)`, `write(handle, contents)`/`io.write` e
+`close(handle)`/`io.close`. Os modos suportados sao `r` (leitura), `w`
+(escrita truncada), `rb` (leitura binaria, devolvida como `string`) e `pw`
+(atualizacao de uma linha existente):
+
+```sun
+import io
+
+with open("notes.txt", "w") as file:
+    io.write(file, "Primeira linha\nSegunda linha\n")
+end
+
+let file: int = open("notes.txt", "pw")
+io.pw(file, int(2), "Linha atualizada")
+io.close(file)
+
+with open("notes.txt", "r") as file:
+    print(io.read(file))
+end
+```
+
+`with open(path, mode) as nome:` fecha o handle ao sair do bloco, inclusive
+quando o corpo retorna ou gera um erro. `io.pw(handle, linha, conteudo)` troca
+uma linha completa, usando numeracao iniciada em 1; linhas inexistentes geram
+erro.
 Erros ao abrir, ler ou gravar arquivos geram erros de runtime Sun e podem ser
 capturados com `try`/`catch`. A implementacao C++ isolada da biblioteca fica em
 `src/stdlib_io.cpp`, e o runtime necessario e incluido no C++ gerado.
 
-## 8. Biblioteca `memory`
+## 8. Biblioteca `json`
+
+`import json` habilita `json.loads(texto)` e `json.dumps(valor)`, implementados
+no runtime C++ sem dependencias externas. O tipo dinamico `json` preserva
+objetos e arrays aninhados e permite leitura e atualizacao por indice:
+
+```sun
+import json
+
+let data: json = json.loads("{\"user\":{\"name\":\"Ada\"},\"scores\":[10,9]}")
+print(data["user"]["name"].as_string())
+print(data["scores"][0].as_int())
+data["user"]["name"] = "Grace"
+print(json.dumps(data))
+```
+
+O acesso a objetos usa chaves `string`; arrays usam indices `int` ou `number`.
+Conversoes de tipo verificadas incluem `.as_string()`, `.as_number()`,
+`.as_int()` e `.as_bool()`; `.is_null()` testa `null`. `json.dumps` tambem
+serializa valores escalares, listas tipadas e dicionarios com chaves `string`.
+JSON malformado, indices fora dos limites ou conversoes incompatíveis geram
+erros de runtime Sun. A implementacao fica em `src/stdlib_json.cpp`.
+
+## 9. Biblioteca `memory`
 
 `import memory` habilita regioes de bytes gerenciadas, sem expor enderecos
 arbitrarios nem ponteiros nativos. Cada alocacao e limitada a 64 MiB; offsets
@@ -796,7 +845,7 @@ mesma alocacao. A memoria e liberada automaticamente quando nao houver mais
 regioes referenciando-a. O tipo `region` nao pode ser impresso, formatado ou
 comparado diretamente.
 
-## 9. C++ inline
+## 10. C++ inline
 
 Blocos C++ literais podem ser usados para interoperabilidade e funcionalidades
 que ainda nao existem na linguagem. O terminador e `endcpp`:
@@ -832,7 +881,7 @@ Ele pode acessar ou afetar qualquer estado disponivel ao programa, inclusive
 arquivos e outros recursos do sistema operacional, sujeito aos privilegios do
 processo.
 
-## 10. Comentarios e regras atuais
+## 11. Comentarios e regras atuais
 
 Linhas vazias e comentarios iniciados por `#` sao ignorados. O comentario pode
 aparecer depois de uma instrucao e nao altera `#` dentro de uma string:
@@ -855,7 +904,7 @@ loops `while`, `for` por `range` e `for` por lista, retornos tipados,
 structs, enums com payload, `match`, classes com heranca simples, funcoes
 aninhadas, dicionarios e C++ inline. Classes de erro podem herdar de `AnError`.
 
-## 11. Erros e acessibilidade
+## 12. Erros e acessibilidade
 
 Erros de sintaxe e tipos aparecem imediatamente com arquivo, linha, coluna e
 trecho destacado. Quando possivel, Sun tambem sugere como corrigir o problema:
@@ -976,7 +1025,7 @@ Problemas comuns:
 - **Erro ao compilar C++**: confirme se `g++`/`clang++` esta instalado ou informe
   o compilador com `--compiler`.
 
-## 12. Executar os testes
+## 13. Executar os testes
 
 Com Python 3 instalado:
 

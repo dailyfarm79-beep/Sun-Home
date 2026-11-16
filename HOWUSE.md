@@ -581,10 +581,10 @@ import local/geometry as geometry
 print(geometry.distance(3, 4))
 ```
 
-O alias entre parenteses e opcional. Modulos locais podem importar outros
-modulos locais; ciclos sao reportados como erro. Por enquanto, eles exportam
-funcoes e blocos `inline cpp` globais. Instrucoes executaveis no nivel superior
-de um modulo nao sao aceitas.
+E possivel envolver o alias entre parenteses, mas isso e opcional. Modulos locais
+podem importar outros modulos locais; ciclos sao reportados como erro. Por
+enquanto, eles exportam funcoes e blocos `inline cpp` globais. Instrucoes
+executaveis no nivel superior de um modulo nao sao aceitas.
 
 ## Biblioteca `sys`
 
@@ -740,7 +740,7 @@ build/sun examples/classes.su --compile
 ## 7. Biblioteca `io`
 
 `import io` habilita leitura e escrita de arquivos de texto. O caminho e uma
-string e pode ser relativo ao diretorio de trabalho do executavel:
+string e pode ser relativo ao diretorio de trabalho do processo:
 
 ```sun
 import io
@@ -787,8 +787,8 @@ end
 
 `with open(path, mode) as nome:` fecha o handle ao sair do bloco, inclusive
 quando o corpo retorna ou gera um erro. `io.pw(handle, linha, conteudo)` troca
-uma linha completa, usando numeracao iniciada em 1; linhas inexistentes geram
-erro.
+uma linha completa, usando numeracao iniciada em 1. O conteudo precisa ser uma
+unica linha; linhas inexistentes geram erro.
 Erros ao abrir, ler ou gravar arquivos geram erros de runtime Sun e podem ser
 capturados com `try`/`catch`. A implementacao C++ isolada da biblioteca fica em
 `src/stdlib_io.cpp`, e o runtime necessario e incluido no C++ gerado.
@@ -811,8 +811,9 @@ print(json.dumps(data))
 
 O acesso a objetos usa chaves `string`; arrays usam indices `int` ou `number`.
 Conversoes de tipo verificadas incluem `.as_string()`, `.as_number()`,
-`.as_int()` e `.as_bool()`; `.is_null()` testa `null`. `json.dumps` tambem
-serializa valores escalares, listas tipadas e dicionarios com chaves `string`.
+`.as_int()` e `.as_bool()`; `.is_null()` testa `null`, e `.size()` retorna o
+tamanho de objetos, arrays ou strings. `json.dumps` tambem serializa valores
+escalares, listas tipadas e dicionarios com chaves `string`.
 JSON malformado, indices fora dos limites ou conversoes incompatíveis geram
 erros de runtime Sun. A implementacao fica em `src/stdlib_json.cpp`.
 
@@ -895,14 +896,15 @@ Dentro de `inline cpp`, as linhas sao copiadas literalmente; use os comentarios
 normais de C++ (`//` ou `/* ... */`) nesse bloco.
 
 Atualmente, Sun suporta declaracoes de funcao no nivel superior, parametros
-tipados, variaveis locais tipadas e mutaveis, chamadas, `print`, strings,
-numeros, `int`, `char`, listas homogeneas, entrada tipada com `input`, operadores
-aritmeticos, de comparacao e logicos, f-strings, `%v`, `if`/`elif`/`else`,
-loops `while`, `for` por `range` e `for` por lista, retornos tipados,
-`try`/`catch` para erros de runtime Sun, as bibliotecas `math`, `io` e
-`memory`, `istype`, parametros com valores padrao, imports de modulos locais,
-structs, enums com payload, `match`, classes com heranca simples, funcoes
-aninhadas, dicionarios e C++ inline. Classes de erro podem herdar de `AnError`.
+tipados, variaveis locais tipadas, constantes, chamadas, `print`, strings,
+numeros, `int`, `char`, listas homogeneas, dicionarios e tuplas, entrada tipada
+com `input`, operadores aritmeticos, de comparacao e logicos, f-strings, `%v`,
+`if`/`elif`/`else`, loops `while`, `for` por `range` e `for` por lista, retornos
+tipados, `try`/`catch` para erros de runtime Sun, as bibliotecas `math`, `io`,
+`json`, `memory` e `sys`, `with open`, `istype`, parametros com valores padrao,
+imports de modulos locais, structs, enums com payload, `match`, classes com
+heranca simples, funcoes aninhadas e C++ inline. Classes de erro podem herdar de
+`AnError`.
 
 ## 12. Erros e acessibilidade
 

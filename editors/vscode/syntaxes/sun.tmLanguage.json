@@ -117,15 +117,19 @@
     },
     {
       "name": "support.function.builtin.sun",
-      "match": "\\b(?:print|input|len|sum|all|any|min|max|round|abs|floor|ceil|trunc|istype|assert|range|open|read|read_bytes|write|write_bytes|close|pw)\\b(?=\\s*\\()"
+      "match": "\\b(?:print|printc|input|len|sum|all|any|min|max|round|abs|floor|ceil|trunc|int|number|char|istype|assert|range|open|read|write|close|pw)\\b(?=\\s*\\()"
     },
     {
       "name": "support.function.math.sun",
       "match": "(?<=math\\.)(?:abs|acos|asin|atan|atan2|ceil|cos|exp|floor|fmod|hypot|log|log10|log2|pow|sin|sqrt|tan|trunc)\\b"
     },
     {
-      "name": "support.function.string.sun",
-      "match": "(?<=\\.)(?:upper|lower|trim|split|replace|contains|starts_with|ends_with|append|clear)\\b(?=\\s*\\()"
+      "name": "support.function.module.sun",
+      "match": "(?<=io\\.)(?:open|read|write|close|pw|write_text|append_text|write_bytes|read_text|read_bytes|exists|read_lines|is_directory|remove|create_directories|createdir|file_size)\\b|(?<=memory\\.)(?:alloc|alloc_ptr|size|read_u8|read_u16|read_u32|write_u8|write_u16|write_u32|fill|copy|free_ptr|ptr_size|ptr_is_null)\\b|(?<=json\\.)(?:loads|dumps)\\b|(?<=bytes\\.)(?:from_string|to_string|from_list|to_list|from_region|to_region)\\b|(?<=sys\\.)(?:args|platform|cwd|env|env_exists|exit)\\b"
+    },
+    {
+      "name": "support.function.method.sun",
+      "match": "(?<=\\.)(?:upper|lower|trim|split|replace|contains|starts_with|ends_with|append|insert|remove|pop|clear|keys|values|get|as_string|as_number|as_int|as_bool|is_null|size)\\b(?=\\s*\\()"
     },
     {
       "match": "\\b(def)\\s+([A-Za-z_][A-Za-z0-9_]*)",

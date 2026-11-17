@@ -1614,6 +1614,114 @@ class SunCompilerTests(unittest.TestCase):
         self.assertEqual(executable.returncode, 0, executable.stderr)
         self.assertEqual(executable.stdout, "size=4\n65\n66\ntrue\nfalse\n")
 
+    def test_memory_fill_and_copy_support_overlapping_regions(self):
+        result = self.invoke(
+            "memory-copy-fill.su",
+            "import memory\n"
+            "let source: region = memory.alloc(4)\n"
+            "memory.fill(source, 46)\n"
+            "memory.write_u8(source, 0, 65)\n"
+            "memory.write_u8(source, 1, 66)\n"
+            "memory.write_u8(source, 2, 67)\n"
+            "memory.copy(source, 1, source, 0, 3)\n"
+            "let destination: region = memory.alloc(5)\n"
+            "memory.fill(destination, 46)\n"
+            "memory.copy(destination, 1, source, 1, 3)\n"
+            "memory.copy(destination, 5, source, 4, 0)\n"
+            "for index in range(0, 5):\n"
+            "    print(memory.read_u8(destination, index))\n"
+            "end\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "memory-copy-fill")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(executable.stdout, "46\n65\n66\n67\n46\n")
+
+    def test_memory_multibyte_integers_use_explicit_endianness(self):
+        result = self.invoke(
+            "memory-multibyte.su",
+            "import memory\n"
+            "let buffer: region = memory.alloc(12)\n"
+            'memory.write_u16(buffer, 0, int(4660), "little")\n'
+            'memory.write_u16(buffer, 2, int(4660), "big")\n'
+            'memory.write_u32(buffer, 4, int(305419896), "little")\n'
+            'memory.write_u32(buffer, 8, int(305419896), "big")\n'
+            'let little16: int = memory.read_u16(buffer, 0, "little")\n'
+            'let big16: int = memory.read_u16(buffer, 2, "big")\n'
+            'let swapped16: int = memory.read_u16(buffer, 0, "big")\n'
+            'let little32: int = memory.read_u32(buffer, 4, "little")\n'
+            'let big32: int = memory.read_u32(buffer, 8, "big")\n'
+            'let swapped32: int = memory.read_u32(buffer, 4, "big")\n'
+            'print(little16)\n'
+            'print(big16)\n'
+            'print(swapped16)\n'
+            'print(little32)\n'
+            'print(big32)\n'
+            'print(swapped32)\n',
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "memory-multibyte")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(
+            executable.stdout,
+            "4660\n4660\n13330\n305419896\n305419896\n2018915346\n",
+        )
+
+    def test_memory_opaque_pointers_allocate_release_and_interoperate(self):
+        result = self.invoke(
+            "memory-pointer.su",
+            "import memory\n"
+            "def allocate(size: int): ptr\n"
+            "    return memory.alloc_ptr(size)\n"
+            "end\n"
+            "let empty: ptr = memory.alloc_ptr(0)\n"
+            "print(memory.ptr_is_null(empty))\n"
+            "print(memory.ptr_size(empty))\n"
+            "memory.free_ptr(empty)\n"
+            "let pointer: ptr = allocate(int(4))\n"
+            "let alias: ptr = pointer\n"
+            "print(memory.ptr_is_null(pointer))\n"
+            "print(memory.ptr_size(pointer))\n"
+            "print(istype(pointer, ptr))\n"
+            "def inspect(pointer: ptr)\n"
+            "    inline cpp:\n"
+            "        auto* bytes = static_cast<unsigned char*>(pointer.get());\n"
+            "        bytes[0] = 65;\n"
+            "        std::cout << static_cast<unsigned int>(bytes[0]) << '\\n';\n"
+            "    endcpp\n"
+            "end\n"
+            "inspect(pointer)\n"
+            "memory.free_ptr(alias)\n"
+            "print(memory.ptr_is_null(pointer))\n"
+            "print(memory.ptr_size(alias))\n"
+            "memory.free_ptr(pointer)\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "memory-pointer")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(executable.stdout, "true\n0\nfalse\n4\ntrue\n65\ntrue\n0\n")
+
     def test_io_reads_writes_appends_and_checks_file_existence(self):
         target = WORK / "io-output.txt"
         result = self.invoke(
@@ -1901,6 +2009,13 @@ class SunCompilerTests(unittest.TestCase):
         )
         self.assertNotEqual(missing_import.returncode, 0)
         self.assertIn("memory functions require 'import memory'", missing_import.stderr)
+        missing_pointer_import = self.invoke(
+            "pointer-missing-import.su",
+            "let pointer: ptr = memory.alloc_ptr(4)\n",
+        )
+        self.assertNotEqual(missing_pointer_import.returncode, 0)
+        self.assertIn("the ptr type requires 'import memory'",
+                      missing_pointer_import.stderr)
 
         print_region = self.invoke(
             "memory-print-region.su",
@@ -1928,10 +2043,58 @@ class SunCompilerTests(unittest.TestCase):
                 "memory.write_u8 value must be an integer from 0 to 255",
             ),
             (
+                "memory-fill-byte-value.su",
+                "import memory\n"
+                "let buffer: region = memory.alloc(1)\n"
+                "memory.fill(buffer, 256)\n",
+                "memory.fill value must be an integer from 0 to 255",
+            ),
+            (
+                "memory-u16-value.su",
+                "import memory\n"
+                "let buffer: region = memory.alloc(2)\n"
+                'memory.write_u16(buffer, 0, 65536, "little")\n',
+                "memory.write_u16 value must be an integer from 0 to 65535",
+            ),
+            (
+                "memory-u32-value.su",
+                "import memory\n"
+                "let buffer: region = memory.alloc(4)\n"
+                'memory.write_u32(buffer, 0, 4294967296, "little")\n',
+                "memory.write_u32 value must be an integer from 0 to 4294967295",
+            ),
+            (
+                "memory-u32-endian.su",
+                "import memory\n"
+                "let buffer: region = memory.alloc(4)\n"
+                'memory.write_u32(buffer, 0, 1, "middle")\n',
+                "memory.write_u32 endian must be 'little' or 'big'",
+            ),
+            (
+                "memory-u32-bounds.su",
+                "import memory\n"
+                "let buffer: region = memory.alloc(3)\n"
+                'print(memory.read_u32(buffer, 0, "big"))\n',
+                "memory range out of bounds",
+            ),
+            (
+                "memory-copy-bounds.su",
+                "import memory\n"
+                "let buffer: region = memory.alloc(1)\n"
+                "memory.copy(buffer, 0, buffer, 0, 2)\n",
+                "memory range out of bounds",
+            ),
+            (
                 "memory-allocation-limit.su",
                 "import memory\n"
                 "let buffer: region = memory.alloc(67108865)\n",
                 "memory.alloc size must be an integer from 0 to 67108864",
+            ),
+            (
+                "memory-pointer-allocation-limit.su",
+                "import memory\n"
+                "let pointer: ptr = memory.alloc_ptr(67108865)\n",
+                "memory.alloc_ptr size must be an integer from 0 to 67108864",
             ),
         ]
         for source_name, source, expected_error in cases:

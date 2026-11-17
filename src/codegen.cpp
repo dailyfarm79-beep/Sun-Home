@@ -358,7 +358,7 @@ std::pair<std::string, const Function*> class_initializer(
 
 std::string transpile(const Program& program) {
     std::ostringstream out;
-    out << "#include <algorithm>\n#include <cctype>\n#include <cmath>\n#include <cstdint>\n#include <exception>\n#include <iostream>\n#include <limits>\n"
+    out << "#include <algorithm>\n#include <cctype>\n#include <cmath>\n#include <cstdint>\n#include <cstdlib>\n#include <exception>\n#include <iostream>\n#include <limits>\n"
            "#include <map>\n#include <memory>\n#include <sstream>\n#include <stdexcept>\n"
            "#include <functional>\n#include <string>\n#include <type_traits>\n#include <utility>\n"
            "#include <tuple>\n#include <variant>\n#include <vector>\n";
@@ -773,11 +773,96 @@ public:
         (*bytes_)[checked_offset(offset)] = static_cast<std::uint8_t>(value);
     }
 
+    std::int64_t read_u16(double offset, const std::string& endian) const {
+        return static_cast<std::int64_t>(
+            read_unsigned(offset, 2, endian, "memory.read_u16"));
+    }
+
+    std::int64_t read_u32(double offset, const std::string& endian) const {
+        return static_cast<std::int64_t>(
+            read_unsigned(offset, 4, endian, "memory.read_u32"));
+    }
+
+    void write_u16(double offset, double value, const std::string& endian) {
+        write_unsigned(offset, value, 2, 65535.0, endian, "memory.write_u16");
+    }
+
+    void write_u32(double offset, double value, const std::string& endian) {
+        write_unsigned(offset, value, 4, 4294967295.0, endian, "memory.write_u32");
+    }
+
+    void fill(double value) {
+        if (!std::isfinite(value) || value < 0.0 || value > 255.0 ||
+            std::floor(value) != value) {
+            throw SunRuntimeError("memory.fill value must be an integer from 0 to 255");
+        }
+        std::fill(bytes_->begin(), bytes_->end(), static_cast<std::uint8_t>(value));
+    }
+
+    void copy_from(double destination_offset, const SunMemoryRegion& source,
+                   double source_offset, double length) {
+        const auto destination_range = checked_range(destination_offset, length);
+        const auto source_range = source.checked_range(source_offset, length);
+        const auto first = source.bytes_->begin() +
+                           static_cast<std::ptrdiff_t>(source_range.first);
+        const auto last = first + static_cast<std::ptrdiff_t>(source_range.second);
+        const std::vector<std::uint8_t> copied(first, last);
+        std::copy(copied.begin(), copied.end(),
+                  bytes_->begin() +
+                      static_cast<std::ptrdiff_t>(destination_range.first));
+    }
+
 private:
     static constexpr std::size_t max_region_size = 64 * 1024 * 1024;
 
     explicit SunMemoryRegion(std::shared_ptr<std::vector<std::uint8_t>> bytes)
         : bytes_(std::move(bytes)) {}
+
+    static void validate_endian(const std::string& endian,
+                                const std::string& operation) {
+        if (endian != "little" && endian != "big") {
+            throw SunRuntimeError(operation + " endian must be 'little' or 'big'");
+        }
+    }
+
+    std::uint32_t read_unsigned(double offset, std::size_t width,
+                                const std::string& endian,
+                                const std::string& operation) const {
+        validate_endian(endian, operation);
+        const auto range = checked_range(offset, static_cast<double>(width));
+        std::uint32_t result = 0;
+        if (endian == "little") {
+            for (std::size_t index = 0; index < width; ++index) {
+                result |= static_cast<std::uint32_t>((*bytes_)[range.first + index])
+                          << (index * 8);
+            }
+        } else {
+            for (std::size_t index = 0; index < width; ++index) {
+                result = (result << 8) | (*bytes_)[range.first + index];
+            }
+        }
+        return result;
+    }
+
+    void write_unsigned(double offset, double value, std::size_t width,
+                        double maximum, const std::string& endian,
+                        const std::string& operation) {
+        if (!std::isfinite(value) || value < 0.0 || value > maximum ||
+            std::floor(value) != value) {
+            throw SunRuntimeError(operation + " value must be an integer from 0 to " +
+                                  std::to_string(static_cast<std::uint64_t>(maximum)));
+        }
+        validate_endian(endian, operation);
+        const auto range = checked_range(offset, static_cast<double>(width));
+        const auto encoded = static_cast<std::uint32_t>(value);
+        for (std::size_t index = 0; index < width; ++index) {
+            const auto shift = endian == "little"
+                                   ? index * 8
+                                   : (width - index - 1) * 8;
+            (*bytes_)[range.first + index] =
+                static_cast<std::uint8_t>((encoded >> shift) & 0xffU);
+        }
+    }
 
     std::size_t checked_offset(double offset) const {
         if (!std::isfinite(offset) || offset < 0.0 || std::floor(offset) != offset) {
@@ -789,7 +874,81 @@ private:
         return static_cast<std::size_t>(offset);
     }
 
+    std::pair<std::size_t, std::size_t> checked_range(double offset,
+                                                      double length) const {
+        if (!std::isfinite(offset) || offset < 0.0 ||
+            std::floor(offset) != offset) {
+            throw SunRuntimeError("memory range offset must be a non-negative integer");
+        }
+        if (!std::isfinite(length) || length < 0.0 ||
+            std::floor(length) != length) {
+            throw SunRuntimeError("memory range length must be a non-negative integer");
+        }
+        if (offset > static_cast<double>(bytes_->size())) {
+            throw SunRuntimeError("memory range out of bounds");
+        }
+        const auto begin = static_cast<std::size_t>(offset);
+        const auto remaining = bytes_->size() - begin;
+        if (length > static_cast<double>(remaining)) {
+            throw SunRuntimeError("memory range out of bounds");
+        }
+        return {begin, static_cast<std::size_t>(length)};
+    }
+
     std::shared_ptr<std::vector<std::uint8_t>> bytes_;
+};
+
+class SunMemoryPointer {
+    struct Allocation {
+        void* address = nullptr;
+        std::size_t size = 0;
+        ~Allocation() { std::free(address); }
+    };
+
+public:
+    SunMemoryPointer() = default;
+
+    static SunMemoryPointer allocate(double requested_size) {
+        if (!std::isfinite(requested_size) || requested_size < 0.0 ||
+            std::floor(requested_size) != requested_size ||
+            requested_size > static_cast<double>(64 * 1024 * 1024)) {
+            throw SunRuntimeError("memory.alloc_ptr size must be an integer from 0 to 67108864");
+        }
+        const auto size = static_cast<std::size_t>(requested_size);
+        if (size == 0) return {};
+        auto allocation = std::make_shared<Allocation>();
+        allocation->address = std::malloc(size);
+        if (!allocation->address) {
+            throw SunRuntimeError("memory.alloc_ptr could not allocate memory");
+        }
+        allocation->size = size;
+        return SunMemoryPointer(std::move(allocation));
+    }
+
+    void* get() const {
+        return allocation_ ? allocation_->address : nullptr;
+    }
+
+    bool is_null() const { return get() == nullptr; }
+
+    std::int64_t size() const {
+        return allocation_ && allocation_->address
+                   ? static_cast<std::int64_t>(allocation_->size)
+                   : 0;
+    }
+
+    void release() const {
+        if (!allocation_ || !allocation_->address) return;
+        std::free(allocation_->address);
+        allocation_->address = nullptr;
+        allocation_->size = 0;
+    }
+
+private:
+    explicit SunMemoryPointer(std::shared_ptr<Allocation> allocation)
+        : allocation_(std::move(allocation)) {}
+
+    std::shared_ptr<Allocation> allocation_;
 };
 )cpp";
     }

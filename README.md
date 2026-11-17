@@ -19,7 +19,7 @@ em [HOWUSE.md](HOWUSE.md).
 ## Recursos atuais
 
 - Funcoes com parametros tipados (`string`, `number`, `bool`, `int`, `char`,
-  listas e `region`) e blocos `end`.
+  listas, `region` e ponteiros opacos `ptr`) e blocos `end`.
 - Chamadas de funcao, `print(...)` e `printc(...)` para texto com cores ANSI/RGB.
 - Variaveis locais tipadas com `let`, constantes imutaveis com `const`,
   operadores aritmeticos e comparacoes.
@@ -44,8 +44,8 @@ em [HOWUSE.md](HOWUSE.md).
 - `sum`, `all`, `any`, `min`, `max` e `round` como funcoes integradas tipadas.
 - `abs`, `floor`, `ceil`, `trunc` e `round(valor, casas)` para operacoes numericas.
 - Condicoes `if`/`elif`/`else` e `import math` para funcoes matematicas.
-- `import memory` com regioes de bytes gerenciadas, limites de alocacao e
-  verificacao de bounds para leitura e escrita.
+- `import memory` com regioes verificadas, copia/preenchimento de bytes,
+  inteiros multi-byte com endian explicito e ponteiros opacos `ptr`.
 - `import io` para leitura de texto/linhas, escrita, diretorios e metadados de
   arquivos, handles com `open`/`close` e blocos `with open`.
 - `import json` para `json.loads`/`json.dumps` e valores JSON dinamicos com

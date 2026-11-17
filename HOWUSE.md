@@ -223,7 +223,7 @@ literal quando estiver usando argumentos formatados.
 ## 6. Numeros, operadores, condicoes e matematica
 
 Parametros podem declarar `string`, `number`, `bool`, `int`, `char` e tipos de
-lista como `list[number]` ou `list[int]`; `region` continua dependendo de
+lista como `list[number]` ou `list[int]`; `region` e `ptr` dependem de
 `import memory`. Parametros sem tipo continuam sendo `string` para manter
 compatibilidade com programas anteriores. Variaveis locais usam `let` e exigem
 tipo explicito:
@@ -348,7 +348,7 @@ indices de `insert` e `pop` podem ser `int` ou `number`; valores fracionarios
 ou fora do intervalo geram erro de runtime. `clear()` esvazia a lista.
 `len` aceita listas e strings. Listas podem ser passadas e retornadas de
 funcoes e impressas. Listas vazias precisam de uma anotacao de tipo; listas
-aninhadas, listas de `region` e listas de tuplas nao sao suportadas.
+aninhadas, listas de `region`/`ptr` e listas de tuplas nao sao suportadas.
 
 ### Funcoes integradas para colecoes e numeros
 
@@ -446,9 +446,9 @@ evitando loop infinito por precisao de ponto flutuante. Os valores de `range`
 sao `number` (`double`), nao inteiros.
 
 Funcoes podem declarar retorno com `: tipo` no cabecalho, usando tipos escalares
-ou listas suportados (e `region` com `import memory`). Sem anotacao, a funcao
-retorna `void`. Todo caminho de uma funcao com retorno tipado deve retornar um
-valor do tipo declarado:
+ou listas suportados (e `region` ou `ptr` com `import memory`). Sem anotacao, a
+funcao retorna `void`. Todo caminho de uma funcao com retorno tipado deve
+retornar um valor do tipo declarado:
 
 ```sun
 def dobro(valor: number): number
@@ -503,7 +503,7 @@ nivel superior, os valores padrao nao podem chamar funcoes.
 
 `istype(valor, tipo)` compara o tipo estatico de um valor com os tipos
 escalares `string`, `number`, `bool`, `int` e `char`, ou com as categorias
-`list`, `dict` e `tuple`. `region` tambem pode ser consultado quando
+`list`, `dict` e `tuple`. `region` e `ptr` tambem podem ser consultados quando
 `import memory` esta ativo. As categorias reconhecem colecoes independentemente
 dos tipos dos elementos ou das chaves:
 
@@ -829,8 +829,10 @@ erros de runtime Sun. A implementacao fica em `src/stdlib_json.cpp`.
 
 ## 9. Biblioteca `memory`
 
-`import memory` habilita regioes de bytes gerenciadas, sem expor enderecos
-arbitrarios nem ponteiros nativos. Cada alocacao e limitada a 64 MiB; offsets
+`import memory` habilita regioes de bytes gerenciadas e ponteiros opacos `ptr`.
+As regioes continuam com acesso por bytes e limites verificados; `ptr` e um
+equivalente generico a `void*` para alocacao e interoperabilidade com C++.
+Cada alocacao e limitada a 64 MiB; offsets
 precisam ser numeros inteiros dentro dos limites da regiao e os valores escritos
 precisam estar entre 0 e 255:
 
@@ -845,11 +847,38 @@ print(memory.size(buffer))
 ```
 
 As operacoes disponiveis sao `memory.alloc(tamanho)`, `memory.size(regiao)`,
-`memory.read_u8(regiao, offset)` e a instrucao
-`memory.write_u8(regiao, offset, valor)`. `alloc` aceita tamanhos inteiros de
-0 a 67108864; regioes com tamanho zero nao tem offsets legiveis ou gravaveis.
-Leitura e escrita fora dos limites, offsets fracionarios/negativos e valores
-byte invalidos geram erro em tempo de execucao.
+`memory.read_u8(regiao, offset)`, `memory.read_u16(regiao, offset, endian)` e
+`memory.read_u32(regiao, offset, endian)`, alem das instrucoes
+`memory.write_u8(regiao, offset, valor)`,
+`memory.write_u16(regiao, offset, valor, endian)`,
+`memory.write_u32(regiao, offset, valor, endian)`,
+`memory.fill(regiao, valor)` e
+`memory.copy(destino, offset_destino, origem, offset_origem, comprimento)`.
+`u16` e `u32` retornam `int`; as escritas aceitam valores de 0 a 65535 e de 0 a
+4294967295, respectivamente. O argumento obrigatorio `endian` aceita `"little"`
+ou `"big"`. `fill` preenche toda a regiao com o byte indicado. `copy` copia um
+intervalo entre regioes e tambem funciona quando origem e destino se sobrepoem.
+`alloc` aceita tamanhos inteiros de 0 a 67108864; regioes com tamanho zero nao
+tem offsets legiveis ou gravaveis. Leitura e escrita fora dos limites, offsets
+ou comprimentos fracionarios/negativos e valores invalidos geram erro em tempo
+de execucao. Para uma copia de comprimento zero, os offsets podem apontar para
+o final da regiao. `u64` ainda nao esta disponivel, pois a linguagem nao tem um
+tipo inteiro sem sinal que represente toda a faixa de 64 bits sem perda.
+
+`memory.alloc_ptr(tamanho)` aloca memoria sem associar um tipo de elemento e
+retorna `ptr`. `memory.ptr_size(ptr)` informa o tamanho em bytes e
+`memory.ptr_is_null(ptr)` verifica se o ponteiro e nulo. Use
+`memory.free_ptr(ptr)` para liberar explicitamente a alocacao; liberar um
+ponteiro nulo ou ja liberado nao faz nada. Copias de um `ptr` compartilham a
+mesma alocacao, portanto libera-la invalida todas as copias. Se nenhuma copia
+restar, a memoria tambem e liberada automaticamente.
+
+Sun nao permite dereferenciar `ptr` nem converter enderecos arbitrarios. Para
+interoperar com C ou C++, passe o ponteiro a um bloco `inline cpp` e use
+`nome.get()` para obter um `void*` emprestado, valido enquanto a alocacao nao
+for liberada. Nao libere esse endereco diretamente em C++; use
+`memory.free_ptr`. A partir do acesso a `.get()`, o codigo C++ tem os
+privilegios e riscos normais de acesso a ponteiros nativos.
 
 Uma regiao atribuida a outra variavel ou passada para uma funcao referencia a
 mesma alocacao. A memoria e liberada automaticamente quando nao houver mais

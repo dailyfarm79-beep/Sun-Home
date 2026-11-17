@@ -109,7 +109,7 @@
     },
     {
       "name": "storage.type.sun",
-      "match": "\\b(?:string|str|number|int|bool|char|region|json|list|dict|tuple)\\b"
+      "match": "\\b(?:string|str|number|int|bool|char|region|ptr|json|list|dict|tuple)\\b"
     },
     {
       "name": "support.module.sun",

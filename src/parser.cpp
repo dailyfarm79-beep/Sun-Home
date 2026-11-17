@@ -491,7 +491,7 @@ Type parse_type(const std::string& name, std::size_t line, const Types& types) {
     if (name.rfind("list[", 0) == 0 && name.back() == ']') {
         const auto item = parse_type(name.substr(5, name.size() - 6), line, types);
         if (item.kind == Type::Kind::custom || item.kind == Type::Kind::json ||
-            item == Type::region ||
+            item == Type::region || item == Type::pointer ||
             is_dictionary_type(item) || is_tuple_type(item) ||
             item.kind == Type::Kind::list_number || item.kind == Type::Kind::list_integer ||
             item.kind == Type::Kind::list_string || item.kind == Type::Kind::list_boolean ||
@@ -504,6 +504,7 @@ Type parse_type(const std::string& name, std::size_t line, const Types& types) {
     if (name == "number") return Type::number;
     if (name == "bool") return Type::boolean;
     if (name == "region") return Type::region;
+    if (name == "ptr") return Type::pointer;
     if (name == "int") return Type::integer;
     if (name == "char") return Type::character;
     if (name == "json") return {Type::Kind::json};
@@ -1126,6 +1127,7 @@ private:
             }
             const auto item_type = values.front().type;
             if (is_list_type(item_type) || item_type == Type::region ||
+                item_type == Type::pointer ||
                 is_tuple_type(item_type) ||
                 item_type == Type::empty_list) {
                 throw ParseError(line_, "lists cannot contain regions or nested lists");
@@ -1160,7 +1162,8 @@ private:
                         throw ParseError(line_, "dictionary keys must have type string, int, bool, or char");
                     }
                     if (value.type.kind == Type::Kind::custom ||
-                        value.type == Type::region || is_list_type(value.type) ||
+                        value.type == Type::region || value.type == Type::pointer ||
+                        is_list_type(value.type) ||
                         is_dictionary_type(value.type) || is_tuple_type(value.type) ||
                         value.type == Type::empty_list ||
                         value.type == Type::empty_dictionary) {
@@ -1999,7 +2002,7 @@ private:
             throw ParseError(line_, "istype expects a value and a type, e.g. istype(x, number)");
         }
         if (peek().kind != Token::Kind::identifier) {
-            throw ParseError(line_, "istype type must be a scalar type, list, dict, tuple, or region");
+            throw ParseError(line_, "istype type must be a scalar type, list, dict, tuple, region, or ptr");
         }
         const auto target_name = take().text;
         if (target_name == "list" || target_name == "dict" ||
@@ -2025,6 +2028,9 @@ private:
         }
         if (target_type == Type::region && !memory_imported_) {
             throw ParseError(line_, "the region type requires 'import memory'");
+        }
+        if (target_type == Type::pointer && !memory_imported_) {
+            throw ParseError(line_, "the ptr type requires 'import memory'");
         }
         if (!accept(")")) throw ParseError(line_, "expected ')' after istype arguments");
         const bool matches = value.type == target_type;
@@ -2143,8 +2149,9 @@ private:
         if (!allow_function_calls_) {
             throw ParseError(line_, "default values cannot call functions");
         }
-        if (name == "write_u8") {
-            throw ParseError(line_, "memory.write_u8 is a statement, not an expression");
+        if (name == "write_u8" || name == "write_u16" || name == "write_u32" ||
+            name == "fill" || name == "copy" || name == "free_ptr") {
+            throw ParseError(line_, "memory." + name + " is a statement, not an expression");
         }
         std::vector<ExprValue> arguments;
         if (!accept(")")) {
@@ -2167,6 +2174,28 @@ private:
                                 "SunMemoryRegion::allocate",
                                 {as_number_expression(arguments[0])}));
         }
+        if (name == "alloc_ptr") {
+            if (arguments.size() != 1 || !is_numeric(arguments[0].type)) {
+                throw ParseError(line_, "memory.alloc_ptr expects one number or int size");
+            }
+            return make_expr_value(
+                Type::pointer,
+                "SunMemoryPointer::allocate(" + as_number(arguments[0]) + ")",
+                make_expression(Expression::Kind::call, Type::pointer,
+                                "SunMemoryPointer::allocate",
+                                {as_number_expression(arguments[0])}));
+        }
+        if (name == "ptr_is_null" || name == "ptr_size") {
+            if (arguments.size() != 1 || arguments[0].type != Type::pointer) {
+                throw ParseError(line_, "memory." + name + " expects one ptr argument");
+            }
+            const auto result_type = name == "ptr_is_null" ? Type::boolean : Type::integer;
+            const auto method = name == "ptr_is_null" ? "is_null" : "size";
+            return make_expr_value(
+                result_type, "(" + arguments[0].cpp + ")." + method + "()",
+                make_expression(Expression::Kind::member_call, result_type, method,
+                                {arguments[0].ast}));
+        }
         if (name == "size") {
             if (arguments.size() != 1 || arguments[0].type != Type::region) {
                 throw ParseError(line_, "memory.size expects one region argument");
@@ -2186,6 +2215,23 @@ private:
                                   as_number(arguments[1]) + ")",
                 make_expression(Expression::Kind::member_call, Type::number, "read_u8",
                                 {arguments[0].ast, as_number_expression(arguments[1])}));
+        }
+        if (name == "read_u16" || name == "read_u32") {
+            if (arguments.size() != 3 || arguments[0].type != Type::region ||
+                !is_numeric(arguments[1].type) ||
+                arguments[2].type != Type::string) {
+                throw ParseError(
+                    line_, "memory." + name +
+                               " expects (region, number or int offset, string endian)");
+            }
+            return make_expr_value(
+                Type::integer,
+                "(" + arguments[0].cpp + ")." + name + "(" +
+                    as_number(arguments[1]) + ", " + arguments[2].cpp + ")",
+                make_expression(Expression::Kind::member_call, Type::integer,
+                                name, {arguments[0].ast,
+                                       as_number_expression(arguments[1]),
+                                       arguments[2].ast}));
         }
         throw ParseError(line_, "unknown memory function '" + name + "'");
     }
@@ -2425,6 +2471,9 @@ private:
                 if (value.type == Type::region) {
                     throw ParseError(line_, "memory regions cannot be interpolated as text");
                 }
+                if (value.type == Type::pointer) {
+                    throw ParseError(line_, "pointers cannot be interpolated as text");
+                }
                 if (value.type.kind == Type::Kind::custom &&
                     !custom_types_.at(value.type.name).is_enum) {
                     throw ParseError(line_, "class and struct values cannot be interpolated directly");
@@ -2575,6 +2624,9 @@ private:
             }
             if (left.type == Type::region) {
                 throw ParseError(line_, "memory regions cannot be compared directly");
+            }
+            if (left.type == Type::pointer) {
+                throw ParseError(line_, "pointers cannot be compared directly");
             }
             if (left.type.kind == Type::Kind::custom &&
                 !custom_types_.at(left.type.name).is_enum) {
@@ -3075,7 +3127,8 @@ private:
                             }
                             if (field_type.kind == Type::Kind::custom ||
                                 field_type.kind == Type::Kind::json ||
-                                field_type == Type::region || is_list_type(field_type) ||
+                                field_type == Type::region ||
+                                field_type == Type::pointer || is_list_type(field_type) ||
                                 is_dictionary_type(field_type) || is_tuple_type(field_type)) {
                                 throw ParseError(line.number,
                                                  "enum payload fields must have scalar types");
@@ -3106,7 +3159,8 @@ private:
                 const auto field_type = source_type(trim(line.text.substr(colon + 1)),
                                                     line.number);
                 if (field_type.kind == Type::Kind::custom ||
-                    field_type == Type::region || field_type == Type::empty_list ||
+                    field_type == Type::region || field_type == Type::pointer ||
+                    field_type == Type::empty_list ||
                     is_dictionary_type(field_type) || is_tuple_type(field_type)) {
                     throw ParseError(line.number, "unsupported field type");
                 }
@@ -3277,6 +3331,9 @@ private:
             if (*return_type == Type::region && !memory_imported_) {
                 throw ParseError(line.number, "the region type requires 'import memory'");
             }
+            if (*return_type == Type::pointer && !memory_imported_) {
+                throw ParseError(line.number, "the ptr type requires 'import memory'");
+            }
         }
         Function function;
         function.name = call.first;
@@ -3326,7 +3383,8 @@ private:
             if ((variadic_positional || variadic_keyword) &&
                 (declared_type.kind == Type::Kind::custom ||
                  declared_type.kind == Type::Kind::json ||
-                 declared_type == Type::region || is_list_type(declared_type) ||
+                 declared_type == Type::region || declared_type == Type::pointer ||
+                 is_list_type(declared_type) ||
                  is_dictionary_type(declared_type) || is_tuple_type(declared_type))) {
                 throw ParseError(line.number,
                                  "variadic parameters currently support scalar types only");
@@ -3339,6 +3397,9 @@ private:
                                   : declared_type;
             if (type == Type::region && !memory_imported_) {
                 throw ParseError(line.number, "the region type requires 'import memory'");
+            }
+            if (type == Type::pointer && !memory_imported_) {
+                throw ParseError(line.number, "the ptr type requires 'import memory'");
             }
             std::optional<std::string> default_value;
             if ((variadic_positional || variadic_keyword) && equals != std::string::npos) {
@@ -3572,6 +3633,12 @@ private:
         const auto type = parse_type(name, line, types_);
         if (type.kind == Type::Kind::json && !json_imported_) {
             throw ParseError(line, "the json type requires 'import json'");
+        }
+        if (type == Type::region && !memory_imported_) {
+            throw ParseError(line, "the region type requires 'import memory'");
+        }
+        if (type == Type::pointer && !memory_imported_) {
+            throw ParseError(line, "the ptr type requires 'import memory'");
         }
         return type;
     }
@@ -4275,6 +4342,9 @@ private:
         if (type == Type::region && !memory_imported_) {
             throw ParseError(line.number, "the region type requires 'import memory'");
         }
+        if (type == Type::pointer && !memory_imported_) {
+            throw ParseError(line.number, "the ptr type requires 'import memory'");
+        }
         const auto value = expression(trim(declaration.substr(equals + 1)), line.number,
                                       symbols, math_imported);
         if (!can_assign(type, value.type)) {
@@ -4411,6 +4481,9 @@ private:
         if (first.type == Type::region) {
             throw ParseError(line.number, "memory regions cannot be printed directly");
         }
+        if (first.type == Type::pointer) {
+            throw ParseError(line.number, "pointers cannot be printed directly");
+        }
         if (first.type.kind == Type::Kind::custom &&
             !custom_types_.at(first.type.name).is_enum) {
             throw ParseError(line.number, "class and struct values cannot be printed directly");
@@ -4434,6 +4507,9 @@ private:
                                             line.number, symbols, math_imported));
                 if (values.back().type == Type::region) {
                     throw ParseError(line.number, "memory regions cannot be formatted as text");
+                }
+                if (values.back().type == Type::pointer) {
+                    throw ParseError(line.number, "pointers cannot be formatted as text");
                 }
                 if (values.back().type.kind == Type::Kind::custom &&
                     !custom_types_.at(values.back().type.name).is_enum) {
@@ -4541,8 +4617,100 @@ private:
             throw ParseError(line.number, "memory functions require 'import memory'");
         }
         const auto call = parse_call(text.substr(7), line.number);
+        if (call.first == "free_ptr") {
+            const auto arguments = split_arguments(call.second, line.number);
+            if (arguments.size() != 1) {
+                throw ParseError(line.number, "memory.free_ptr expects one ptr argument");
+            }
+            const auto pointer = expression(arguments[0], line.number, symbols,
+                                            math_imported);
+            if (pointer.type != Type::pointer) {
+                throw ParseError(line.number, "memory.free_ptr expects one ptr argument");
+            }
+            return "(" + pointer.cpp + ").release();";
+        }
+        if (call.first == "write_u16" || call.first == "write_u32") {
+            const auto arguments = split_arguments(call.second, line.number);
+            if (arguments.size() != 4) {
+                throw ParseError(
+                    line.number, "memory." + call.first +
+                                     " expects (region, offset, value, endian)");
+            }
+            const auto region = expression(arguments[0], line.number, symbols, math_imported);
+            const auto offset = expression(arguments[1], line.number, symbols, math_imported);
+            const auto value = expression(arguments[2], line.number, symbols, math_imported);
+            const auto endian = expression(arguments[3], line.number, symbols, math_imported);
+            if (region.type != Type::region ||
+                (offset.type != Type::number && offset.type != Type::integer) ||
+                (value.type != Type::number && value.type != Type::integer) ||
+                endian.type != Type::string) {
+                throw ParseError(
+                    line.number, "memory." + call.first +
+                                     " expects (region, number or int offset, number or int value, string endian)");
+            }
+            const auto numeric = [](const ExprValue& value) {
+                return value.type == Type::integer
+                           ? "static_cast<double>(" + value.cpp + ")"
+                           : value.cpp;
+            };
+            return "(" + region.cpp + ")." + call.first + "(" +
+                   numeric(offset) + ", " + numeric(value) + ", " +
+                   endian.cpp + ");";
+        }
+        if (call.first == "fill") {
+            const auto arguments = split_arguments(call.second, line.number);
+            if (arguments.size() != 2) {
+                throw ParseError(line.number, "memory.fill expects (region, byte value)");
+            }
+            const auto region = expression(arguments[0], line.number, symbols, math_imported);
+            const auto value = expression(arguments[1], line.number, symbols, math_imported);
+            if (region.type != Type::region ||
+                (value.type != Type::number && value.type != Type::integer)) {
+                throw ParseError(line.number,
+                                 "memory.fill expects a region and number or int byte value");
+            }
+            const auto numeric = value.type == Type::integer
+                                     ? "static_cast<double>(" + value.cpp + ")"
+                                     : value.cpp;
+            return "(" + region.cpp + ").fill(" + numeric + ");";
+        }
+        if (call.first == "copy") {
+            const auto arguments = split_arguments(call.second, line.number);
+            if (arguments.size() != 5) {
+                throw ParseError(line.number,
+                                 "memory.copy expects (destination, destination_offset, source, source_offset, length)");
+            }
+            const auto destination =
+                expression(arguments[0], line.number, symbols, math_imported);
+            const auto destination_offset =
+                expression(arguments[1], line.number, symbols, math_imported);
+            const auto source = expression(arguments[2], line.number, symbols, math_imported);
+            const auto source_offset =
+                expression(arguments[3], line.number, symbols, math_imported);
+            const auto length = expression(arguments[4], line.number, symbols, math_imported);
+            const auto numeric = [](const ExprValue& value) {
+                return value.type == Type::integer
+                           ? "static_cast<double>(" + value.cpp + ")"
+                           : value.cpp;
+            };
+            if (destination.type != Type::region || source.type != Type::region ||
+                (destination_offset.type != Type::number &&
+                 destination_offset.type != Type::integer) ||
+                (source_offset.type != Type::number &&
+                 source_offset.type != Type::integer) ||
+                (length.type != Type::number && length.type != Type::integer)) {
+                throw ParseError(
+                    line.number,
+                    "memory.copy expects destination and source regions with number or int offsets and length");
+            }
+            return "(" + destination.cpp + ").copy_from(" +
+                   numeric(destination_offset) + ", " + source.cpp + ", " +
+                   numeric(source_offset) + ", " + numeric(length) + ");";
+        }
         if (call.first != "write_u8") {
-            throw ParseError(line.number, "only memory.write_u8 is a standalone memory statement");
+            throw ParseError(
+                line.number,
+                "memory supports write_u8, write_u16, write_u32, fill, and copy as standalone statements");
         }
         const auto arguments = split_arguments(call.second, line.number);
         if (arguments.size() != 3) {
@@ -5151,6 +5319,7 @@ std::string cpp_type(Type type) {
     case Type::Kind::number: return "double";
     case Type::Kind::boolean: return "bool";
     case Type::Kind::region: return "SunMemoryRegion";
+    case Type::Kind::pointer: return "SunMemoryPointer";
     case Type::Kind::integer: return "std::int64_t";
     case Type::Kind::character: return "std::string";
     case Type::Kind::json: return "SunJson";

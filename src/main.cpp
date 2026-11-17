@@ -18,6 +18,8 @@ struct Options {
     fs::path source;
     fs::path output;
     bool compile = false;
+    bool llvm = false;
+    bool emit_llvm = false;
     bool check = false;
     bool output_explicit = false;
     bool compiler_explicit = false;
@@ -36,7 +38,7 @@ std::string shell_quote(const std::string& value) {
 
 void print_usage(std::ostream& out) {
     out << "Usage: sun <source.su> [-o <output.cpp>] [--compile | --check] "
-           "[--compiler <path>]\n";
+           "[--compiler <path>] [--emit-llvm | --llvm]\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -56,6 +58,12 @@ Options parse_options(int argc, char** argv) {
             options.output = argv[i];
             options.output_explicit = true;
         } else if (argument == "--compile") {
+            options.compile = true;
+        } else if (argument == "--emit-llvm") {
+            options.emit_llvm = true;
+        } else if (argument == "--llvm") {
+            options.emit_llvm = true;
+            options.llvm = true;
             options.compile = true;
         } else if (argument == "--check") {
             options.check = true;
@@ -82,13 +90,22 @@ Options parse_options(int argc, char** argv) {
     if (options.check && options.compiler_explicit) {
         throw std::runtime_error("'--compiler' cannot be used with '--check'");
     }
+    if (options.check && (options.emit_llvm || options.llvm)) {
+        throw std::runtime_error("'--check' cannot be combined with LLVM output options");
+    }
+    if (options.emit_llvm && options.compiler_explicit) {
+        throw std::runtime_error("'--compiler' cannot be used with LLVM output options");
+    }
+    if (options.emit_llvm && !options.output_explicit) {
+        options.output.replace_extension(".ll");
+    }
     if (options.output == "-") {
         if (options.compile) {
-            throw std::runtime_error("cannot compile when C++ output is sent to stdout");
+            throw std::runtime_error("cannot compile when output is sent to stdout");
         }
     } else if (fs::absolute(options.source).lexically_normal() ==
                fs::absolute(options.output).lexically_normal()) {
-        throw std::runtime_error("C++ output path must not overwrite the source file");
+        throw std::runtime_error("output path must not overwrite the source file");
     }
     return options;
 }
@@ -171,35 +188,52 @@ int main(int argc, char** argv) {
         const auto program = sun::parse(input);
         if (options.check) return 0;
 
-        const auto generated = sun::transpile(program);
+        const auto generated = options.emit_llvm
+                                   ? sun::transpile_llvm(program)
+                                   : sun::transpile(program);
         if (options.output == "-") {
             std::cout << generated;
         } else {
             std::ofstream output(options.output);
             if (!output) {
-                throw std::runtime_error("cannot write C++ output '" + options.output.string() + "'");
+                throw std::runtime_error("cannot write output file '" + options.output.string() + "'");
             }
             output << generated;
             if (!output) throw std::runtime_error("failed while writing C++ output");
         }
 
         if (options.compile) {
-            const char* environment_compiler = std::getenv("CXX");
-            const auto compiler = environment_compiler && !options.compiler_explicit
-                                      ? std::string(environment_compiler)
-                                      : options.compiler;
-            auto executable = options.source;
-            executable.replace_extension("");
-            const std::string command = shell_quote(compiler) +
-                                        " -std=c++17 -Wall -Wextra -pedantic " +
-                                        shell_quote(options.output.string()) + " -o " +
-                                        shell_quote(executable.string());
-            const int result = std::system(command.c_str());
-            if (result != 0) {
-                throw std::runtime_error("C++ compilation failed (exit code " +
-                                         std::to_string(result) + ")");
+            if (options.emit_llvm) {
+                auto executable = options.source;
+                executable.replace_extension("");
+                const std::string ir_path = options.output.string();
+                const std::string command =
+                    "clang++ -x ir " + shell_quote(ir_path) +
+                    " -o " + shell_quote(executable.string());
+                const int result = std::system(command.c_str());
+                if (result != 0) {
+                    throw std::runtime_error("LLVM compilation failed (exit code " +
+                                             std::to_string(result) + ")");
+                }
+                std::cerr << "Compiled executable: " << executable.string() << '\n';
+            } else {
+                const char* environment_compiler = std::getenv("CXX");
+                const auto compiler = environment_compiler && !options.compiler_explicit
+                                          ? std::string(environment_compiler)
+                                          : options.compiler;
+                auto executable = options.source;
+                executable.replace_extension("");
+                const std::string command = shell_quote(compiler) +
+                                            " -std=c++17 -Wall -Wextra -pedantic " +
+                                            shell_quote(options.output.string()) + " -o " +
+                                            shell_quote(executable.string());
+                const int result = std::system(command.c_str());
+                if (result != 0) {
+                    throw std::runtime_error("C++ compilation failed (exit code " +
+                                             std::to_string(result) + ")");
+                }
+                std::cerr << "Compiled executable: " << executable.string() << '\n';
             }
-            std::cerr << "Compiled executable: " << executable.string() << '\n';
         }
         return 0;
     } catch (const sun::ParseError& error) {

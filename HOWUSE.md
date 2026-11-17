@@ -83,6 +83,31 @@ build/sun examples/hello.su -o build/hello.cpp
 informada, Sun usa a variavel de ambiente `CXX` quando configurada e, caso
 contrario, tenta usar `g++`.
 
+### Backend LLVM experimental
+
+O backend opcional `--emit-llvm` grava LLVM IR em um arquivo `.ll`; `--llvm`
+tambem tenta compilar esse IR com `clang++` e cria o executavel ao lado do
+arquivo `.su`:
+
+```sh
+cat > llvm-print.su <<'EOF'
+let count: int = int(3)
+count = count + int(4)
+print(count)
+EOF
+build/sun llvm-print.su --emit-llvm
+build/sun llvm-print.su --llvm
+```
+
+O subconjunto atual inclui variaveis escalares (`int`, `number`, `bool` e
+`string`), atribuicao, aritmetica numerica, comparacoes, impressoes e blocos
+`if`, `while`, `break` e `continue`. Funcoes, colecoes, chamadas gerais,
+interpolacao e bibliotecas ainda nao estao implementadas nesse backend e geram
+um erro explicito. Overflow inteiro e divisao invalida terminam o processo via
+trap LLVM; ainda nao podem ser capturados como erros Sun. Use o backend C++ para
+programas que precisem de recursos nao suportados ou da semantica completa de
+tratamento de erros da Sun.
+
 Para escrever o C++ gerado na saida padrao:
 
 ```sh

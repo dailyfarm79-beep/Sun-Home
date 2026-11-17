@@ -385,6 +385,7 @@ struct Program {
 
 Program parse(std::istream& source);
 std::string transpile(const Program& program);
+std::string transpile_llvm(const Program& program);
 std::string cpp_type(Type type);
 
 } // namespace sun

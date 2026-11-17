@@ -42,6 +42,68 @@ class SunCompilerTests(unittest.TestCase):
         self.assertIn("Usage: sun <source.su>", result.stdout)
         self.assertIn("--check", result.stdout)
 
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_numeric_variables_and_control_flow(self):
+        result = self.invoke(
+            "llvm-basic.su",
+            "let count: int = int(3)\n"
+            "count = count + int(4)\n"
+            "print(count)\n"
+            "let amount: number = 1.5 + 2.5\n"
+            "print(amount)\n"
+            "let ok: bool = count > int(4) and true\n"
+            "print(ok)\n"
+            "if ok:\n"
+            '    print("branch taken")\n'
+            "else:\n"
+            '    print("branch skipped")\n'
+            "end\n"
+            "while count < int(9):\n"
+            "    count = count + int(1)\n"
+            "end\n"
+            "print(count)\n"
+            "let steps: int = int(0)\n"
+            "while steps < int(4):\n"
+            "    steps = steps + int(1)\n"
+            "    if steps == int(2):\n"
+            "        continue\n"
+            "    end\n"
+            "    if steps == int(3):\n"
+            "        break\n"
+            "    end\n"
+            "    print(steps)\n"
+            "end\n"
+            'let message: string = "A\\0B"\n'
+            "print(message)\n"
+            'message = "done"\n'
+            "print(message)\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "llvm-basic")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(
+            executable.stdout,
+            b"7\n4\ntrue\nbranch taken\n9\n1\nA\x00B\ndone\n",
+        )
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_rejects_unsupported_function_with_clear_error(self):
+        result = self.invoke(
+            "llvm-unsupported.su",
+            "def greet()\n"
+            '    print("hello")\n'
+            "end\n",
+            "--emit-llvm",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("LLVM backend does not yet support functions", result.stderr)
+
     def test_check_validates_without_creating_output(self):
         result = self.invoke(
             "check-only.su",

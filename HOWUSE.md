@@ -538,11 +538,16 @@ Essas instrucoes geram erro se forem usadas fora de um loop.
 
 `import math` deve aparecer antes das declaracoes e instrucoes. Ele habilita as
 funcoes `math.abs`, `math.acos`, `math.asin`, `math.atan`, `math.atan2`,
-`math.ceil`, `math.cos`, `math.exp`, `math.floor`, `math.fmod`, `math.hypot`,
-`math.log`, `math.log10`, `math.log2`, `math.pow`, `math.sin`, `math.sqrt`,
-`math.tan` e `math.trunc`. Todas recebem um ou dois argumentos numericos; todas,
-exceto `math.atan2`, `math.fmod`, `math.hypot` e `math.pow`, recebem um. A
-biblioteca e implementada usando `<cmath>` do C++.
+`math.ceil`, `math.cos`, `math.exp`, `math.factorial`, `math.floor`,
+`math.fmod`, `math.hypot`, `math.log`, `math.log10`, `math.log2`, `math.pow`,
+`math.sin`, `math.sqrt`, `math.tan` e `math.trunc`. As funcoes matematicas
+recebem um ou dois argumentos numericos; todas, exceto `math.atan2`,
+`math.fmod`, `math.hypot` e `math.pow`, recebem um.
+`math.factorial(x)` (tambem disponivel como `math.fatorial(x)`) usa a
+extensao gamma do fatorial, portanto aceita valores fracionarios e argumentos
+maiores que 20, retornando `number`. Argumentos nao finitos, inteiros negativos
+(polo da funcao gamma) e resultados fora da faixa de `number` geram erro em
+runtime. As demais funcoes sao implementadas usando `<cmath>` do C++.
 
 ### Modulos locais
 

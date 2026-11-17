@@ -2,7 +2,7 @@
   "name": "sun-language",
   "displayName": "Sun Language",
   "description": "Sun syntax, snippets, completions, signature help, hover documentation, formatting, and file icons.",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "publisher": "sun-language",
   "main": "./extension.js",
   "repository": {

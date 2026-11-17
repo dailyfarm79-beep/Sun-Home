@@ -45,7 +45,8 @@ em [HOWUSE.md](HOWUSE.md).
   de colecoes tipadas em chamadas.
 - `sum`, `all`, `any`, `min`, `max` e `round` como funcoes integradas tipadas.
 - `abs`, `floor`, `ceil`, `trunc` e `round(valor, casas)` para operacoes numericas.
-- Condicoes `if`/`elif`/`else` e `import math` para funcoes matematicas.
+- Condicoes `if`/`elif`/`else` e `import math` para funcoes matematicas,
+  incluindo `math.factorial` para calculos em `number`.
 - `import memory` com regioes verificadas, copia/preenchimento de bytes,
   inteiros multi-byte com endian explicito e ponteiros opacos `ptr`.
 - `import io` para leitura de texto/linhas, escrita, diretorios e metadados de

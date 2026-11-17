@@ -1,0 +1,6 @@
+import math
+def fact(num: number)
+    printc(f"O fatorial de {num} é {math.factorial(num)}", "cyan")
+end
+
+fact(36)

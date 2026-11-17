@@ -121,7 +121,7 @@
     },
     {
       "name": "support.function.math.sun",
-      "match": "(?<=math\\.)(?:abs|acos|asin|atan|atan2|ceil|cos|exp|floor|fmod|hypot|log|log10|log2|pow|sin|sqrt|tan|trunc)\\b"
+      "match": "(?<=math\\.)(?:abs|acos|asin|atan|atan2|ceil|cos|exp|factorial|fatorial|floor|fmod|hypot|log|log10|log2|pow|sin|sqrt|tan|trunc)\\b"
     },
     {
       "name": "support.function.module.sun",

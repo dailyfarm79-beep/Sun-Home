@@ -763,6 +763,56 @@ class SunCompilerTests(unittest.TestCase):
         self.assertEqual(executable.returncode, 0, executable.stderr)
         self.assertEqual(executable.stdout, "0\n0\n0\n0\n3\n5\n2\n3\n2\n")
 
+    def test_math_factorial_accepts_general_numbers_and_reports_undefined_results(self):
+        result = self.invoke(
+            "math-factorial.su",
+            "import math\n"
+            "print(math.factorial(0))\n"
+            "print(math.factorial(1))\n"
+            "print(math.factorial(5))\n"
+            "print(math.factorial(10))\n"
+            "let fact36: number = math.factorial(36)\n"
+            "print(fact36 / math.factorial(35))\n"
+            "print(math.factorial(2.5) > 3.3)\n"
+            "print(math.fatorial(36) / math.fatorial(35))\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "math-factorial")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(
+            executable.stdout,
+            "1\n1\n120\n3.6288e+06\n36\ntrue\n36\n",
+        )
+
+        for value in ("-1", "171", "1e308"):
+            with self.subTest(value=value):
+                invalid = self.invoke(
+                    "math-factorial-invalid.su",
+                    "import math\n"
+                    f"print(math.factorial({value}))\n",
+                    "--compile",
+                )
+                self.assertEqual(invalid.returncode, 0, invalid.stderr)
+                failed = subprocess.run(
+                    [str(WORK / "math-factorial-invalid")],
+                    cwd=ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertNotEqual(failed.returncode, 0)
+                self.assertIn(
+                    "math.factorial is undefined at negative integers or outside the number range",
+                    failed.stderr,
+                )
+
     def test_constant_expressions_are_folded_in_generated_cpp(self):
         result = self.invoke(
             "constant-folding.su",

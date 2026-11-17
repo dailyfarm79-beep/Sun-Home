@@ -406,6 +406,18 @@ double sun_round_digits(double value, std::int64_t digits) {
     return std::round(value * factor) / factor;
 }
 
+double sun_math_factorial(double value) {
+    if (!std::isfinite(value)) {
+        throw SunRuntimeError("math.factorial expects a finite number");
+    }
+    const auto result = std::tgamma(value + 1.0);
+    if (!std::isfinite(result)) {
+        throw SunRuntimeError(
+            "math.factorial is undefined at negative integers or outside the number range");
+    }
+    return result;
+}
+
 std::string sun_string_upper(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });

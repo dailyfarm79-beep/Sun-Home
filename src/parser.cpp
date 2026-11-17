@@ -2661,6 +2661,8 @@ private:
             {"atan2", {"std::atan2", 2}}, {"ceil", {"std::ceil", 1}},
             {"cos", {"std::cos", 1}}, {"exp", {"std::exp", 1}},
             {"floor", {"std::floor", 1}}, {"fmod", {"std::fmod", 2}},
+            {"factorial", {"sun_math_factorial", 1}},
+            {"fatorial", {"sun_math_factorial", 1}},
             {"hypot", {"std::hypot", 2}}, {"log", {"std::log", 1}},
             {"log10", {"std::log10", 1}}, {"log2", {"std::log2", 1}},
             {"pow", {"std::pow", 2}}, {"sin", {"std::sin", 1}},
@@ -2689,6 +2691,17 @@ private:
                                      std::to_string(function->second.second) +
                                      " argument(s), got " +
                                      std::to_string(arguments.size()));
+        }
+        if (name == "factorial" || name == "fatorial") {
+            if (!is_numeric(arguments.front().type)) {
+                throw ParseError(line_, "math.factorial requires one numeric argument");
+            }
+            return make_expr_value(
+                Type::number,
+                "sun_math_factorial(" + as_number(arguments.front()) + ")",
+                make_expression(Expression::Kind::call, Type::number,
+                               "sun_math_factorial",
+                               {as_number_expression(arguments.front())}));
         }
         std::ostringstream code;
         code << function->second.first << '(';

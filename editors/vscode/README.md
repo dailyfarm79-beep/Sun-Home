@@ -10,8 +10,8 @@ this `editors/vscode` directory. To use the file icon, select **Sun File Icons**
 under **File Icon Theme**.
 
 To install the packaged version, run **Extensions: Install from VSIX...** and
-select `sun-language-0.3.0.vsix`, or run `code --install-extension
-sun-language-0.3.0.vsix` from this directory.
+select `sun-language-0.3.2.vsix`, or run `code --install-extension
+sun-language-0.3.2.vsix` from this directory.
 
 The formatter uses four spaces by default. Change
 `sun.format.indentSize` to use a different indent width. Inline C++ contents are

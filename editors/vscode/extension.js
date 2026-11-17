@@ -65,7 +65,7 @@ const builtins = {
 };
 
 const mathFunctions = ["abs", "acos", "asin", "atan", "atan2", "ceil", "cos",
-  "exp", "floor", "fmod", "hypot", "log", "log10", "log2", "pow", "sin",
+  "exp", "factorial", "fatorial", "floor", "fmod", "hypot", "log", "log10", "log2", "pow", "sin",
   "sqrt", "tan", "trunc"];
 
 const mathApi = Object.fromEntries(mathFunctions.map(name => [
@@ -76,7 +76,9 @@ const mathApi = Object.fromEntries(mathFunctions.map(name => [
     hypot: [parameter("x", "number | int"), parameter("y", "number | int")],
     pow: [parameter("base", "number | int"), parameter("exponent", "number | int")]
   })[name] || [parameter("value", "number | int")],
-  `Return the ${name} mathematical result.`)
+  name === "factorial" || name === "fatorial"
+    ? "Calculate the generalized factorial using the gamma function; returns number."
+    : `Return the ${name} mathematical result.`)
 ]));
 const moduleApis = {
   io: {

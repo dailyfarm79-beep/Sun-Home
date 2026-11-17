@@ -109,15 +109,15 @@
     },
     {
       "name": "storage.type.sun",
-      "match": "\\b(?:string|str|number|int|bool|char|region|ptr|json|list|dict|tuple)\\b"
+      "match": "\\b(?:string|str|number|int|bool|char|region|ptr|bytes|json|list|dict|tuple)\\b"
     },
     {
       "name": "support.module.sun",
-      "match": "\\b(?:math|io|sys|memory|json)\\b(?=\\.)"
+      "match": "\\b(?:math|io|sys|memory|json|bytes)\\b(?=\\.)"
     },
     {
       "name": "support.function.builtin.sun",
-      "match": "\\b(?:print|input|len|sum|all|any|min|max|round|abs|floor|ceil|trunc|istype|assert|range|open|read|write|close|pw)\\b(?=\\s*\\()"
+      "match": "\\b(?:print|input|len|sum|all|any|min|max|round|abs|floor|ceil|trunc|istype|assert|range|open|read|read_bytes|write|write_bytes|close|pw)\\b(?=\\s*\\()"
     },
     {
       "name": "support.function.math.sun",
@@ -125,7 +125,7 @@
     },
     {
       "name": "support.function.string.sun",
-      "match": "(?<=\\.)(?:upper|lower|trim|split|replace|contains|starts_with|ends_with)\\b(?=\\s*\\()"
+      "match": "(?<=\\.)(?:upper|lower|trim|split|replace|contains|starts_with|ends_with|append|clear)\\b(?=\\s*\\()"
     },
     {
       "match": "\\b(def)\\s+([A-Za-z_][A-Za-z0-9_]*)",

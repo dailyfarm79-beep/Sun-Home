@@ -26,6 +26,8 @@ em [HOWUSE.md](HOWUSE.md).
 - Operadores logicos com curto-circuito; loops `while` e `for ... in range(...)`.
 - Listas homogeneas tipadas com indexacao, `append`, `insert`, `remove`,
   `pop`, `contains`, `clear`, `len` e iteracao.
+- Sequencias mutaveis `bytes` com indexacao e validacao de octetos,
+  conversoes para strings/listas/regioes e iteracao.
 - Dicionarios homogeneos com `keys`, `values`, `get`, `remove`, `contains`,
   `clear`, indexacao, `len` e iteracao.
 - Tuplas heterogeneas, fixas e imutaveis com acesso por indice literal.
@@ -47,7 +49,8 @@ em [HOWUSE.md](HOWUSE.md).
 - `import memory` com regioes verificadas, copia/preenchimento de bytes,
   inteiros multi-byte com endian explicito e ponteiros opacos `ptr`.
 - `import io` para leitura de texto/linhas, escrita, diretorios e metadados de
-  arquivos, handles com `open`/`close` e blocos `with open`.
+  arquivos, IO binario com `bytes`, handles com `open`/`close` e blocos
+  `with open`.
 - `import json` para `json.loads`/`json.dumps` e valores JSON dinamicos com
   objetos e arrays aninhados.
 - `import sys` para argumentos, ambiente, diretorio atual, plataforma e saida.

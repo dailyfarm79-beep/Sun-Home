@@ -763,6 +763,10 @@ caminho existe. `io.read_lines(path)` devolve as linhas como `list[string]`;
 algo foi criado; `io.remove(path)` remove um arquivo ou diretorio vazio e
 retorna se removeu algo; `io.file_size(path)` retorna o tamanho em bytes como
 `int`.
+Para dados binarios, `io.read_bytes(path)` retorna um valor `bytes` e
+`io.write_bytes(path, dados)` grava os octetos sem conversao de texto.
+`io.read_bytes` e `io.write_bytes` usam o caminho e nao alteram a semantica dos
+handles `rb`, cuja leitura continua retornando `string`.
 `io.createdir(path, exist="ok")` tambem cria diretorios e seus pais, retornando
 `true` se criou o destino e `false` se ele ja era um diretorio. Com
 `exist="no"`, a chamada gera erro se o destino ja existir; um caminho existente
@@ -885,7 +889,35 @@ mesma alocacao. A memoria e liberada automaticamente quando nao houver mais
 regioes referenciando-a. O tipo `region` nao pode ser impresso, formatado ou
 comparado diretamente.
 
-## 10. C++ inline
+## 10. Tipo `bytes`
+
+`bytes` e uma sequencia mutavel de octetos, indexada a partir de zero. Cada
+valor deve estar entre 0 e 255; indices, atribuicoes e inclusoes sao verificados
+em runtime:
+
+```sun
+import io
+
+let data: bytes = bytes.from_list([int(65), int(66)])
+data[1] = int(67)
+data.append(10)
+print(len(data))
+print(data.contains(67))
+io.write_bytes("message.bin", data)
+
+let loaded: bytes = io.read_bytes("message.bin")
+for value in loaded:
+    print(value)
+end
+```
+
+`bytes.from_string`/`bytes.to_string` copiam os octetos da string sem validar
+UTF-8; `bytes.from_list`/`bytes.to_list` convertem entre `bytes` e `list[int]`.
+`bytes.from_region`/`bytes.to_region` copiam dados e requerem `import memory`.
+`append`, `clear`, indexacao, `len`, `contains` e iteracao estao disponiveis.
+Impressao direta de `bytes` nao e suportada; converta para string ou lista.
+
+## 11. C++ inline
 
 Blocos C++ literais podem ser usados para interoperabilidade e funcionalidades
 que ainda nao existem na linguagem. O terminador e `endcpp`:
@@ -921,7 +953,7 @@ Ele pode acessar ou afetar qualquer estado disponivel ao programa, inclusive
 arquivos e outros recursos do sistema operacional, sujeito aos privilegios do
 processo.
 
-## 11. Comentarios e regras atuais
+## 12. Comentarios e regras atuais
 
 Linhas vazias e comentarios iniciados por `#` sao ignorados. O comentario pode
 aparecer depois de uma instrucao e nao altera `#` dentro de uma string:

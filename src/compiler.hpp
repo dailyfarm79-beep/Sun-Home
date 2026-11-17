@@ -55,6 +55,7 @@ struct Type {
         boolean,
         region,
         pointer,
+        bytes,
         integer,
         character,
         json,
@@ -88,6 +89,7 @@ struct Type {
     static const Type boolean;
     static const Type region;
     static const Type pointer;
+    static const Type bytes;
     static const Type integer;
     static const Type character;
     static const Type list_number;
@@ -104,6 +106,7 @@ inline const Type Type::number{Type::Kind::number};
 inline const Type Type::boolean{Type::Kind::boolean};
 inline const Type Type::region{Type::Kind::region};
 inline const Type Type::pointer{Type::Kind::pointer};
+inline const Type Type::bytes{Type::Kind::bytes};
 inline const Type Type::integer{Type::Kind::integer};
 inline const Type Type::character{Type::Kind::character};
 inline const Type Type::list_number{Type::Kind::list_number};

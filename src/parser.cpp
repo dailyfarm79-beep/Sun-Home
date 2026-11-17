@@ -491,7 +491,7 @@ Type parse_type(const std::string& name, std::size_t line, const Types& types) {
     if (name.rfind("list[", 0) == 0 && name.back() == ']') {
         const auto item = parse_type(name.substr(5, name.size() - 6), line, types);
         if (item.kind == Type::Kind::custom || item.kind == Type::Kind::json ||
-            item == Type::region || item == Type::pointer ||
+            item == Type::region || item == Type::pointer || item == Type::bytes ||
             is_dictionary_type(item) || is_tuple_type(item) ||
             item.kind == Type::Kind::list_number || item.kind == Type::Kind::list_integer ||
             item.kind == Type::Kind::list_string || item.kind == Type::Kind::list_boolean ||
@@ -505,6 +505,7 @@ Type parse_type(const std::string& name, std::size_t line, const Types& types) {
     if (name == "bool") return Type::boolean;
     if (name == "region") return Type::region;
     if (name == "ptr") return Type::pointer;
+    if (name == "bytes") return Type::bytes;
     if (name == "int") return Type::integer;
     if (name == "char") return Type::character;
     if (name == "json") return {Type::Kind::json};
@@ -1127,7 +1128,7 @@ private:
             }
             const auto item_type = values.front().type;
             if (is_list_type(item_type) || item_type == Type::region ||
-                item_type == Type::pointer ||
+                item_type == Type::pointer || item_type == Type::bytes ||
                 is_tuple_type(item_type) ||
                 item_type == Type::empty_list) {
                 throw ParseError(line_, "lists cannot contain regions or nested lists");
@@ -1163,6 +1164,7 @@ private:
                     }
                     if (value.type.kind == Type::Kind::custom ||
                         value.type == Type::region || value.type == Type::pointer ||
+                        value.type == Type::bytes ||
                         is_list_type(value.type) ||
                         is_dictionary_type(value.type) || is_tuple_type(value.type) ||
                         value.type == Type::empty_list ||
@@ -1396,6 +1398,16 @@ private:
                 }
                 return parse_json_call(name);
             }
+            if (name == "bytes" && accept(".")) {
+                if (peek().kind != Token::Kind::identifier) {
+                    throw ParseError(line_, "expected a bytes operation after 'bytes.'");
+                }
+                name = take().text;
+                if (!accept("(")) {
+                    throw ParseError(line_, "expected '(' after bytes operation name");
+                }
+                return parse_bytes_call(name);
+            }
             if (name == "istype" && accept("(")) return parse_istype_call();
             if (accept("(")) {
                 const auto signature = signatures_.find(name);
@@ -1449,8 +1461,9 @@ private:
             if (accept("[")) {
                 if (!is_list_type(value.type) && !is_dictionary_type(value.type) &&
                     value.type.kind != Type::Kind::json &&
+                    value.type != Type::bytes &&
                     !is_tuple_type(value.type)) {
-                    throw ParseError(line_, "only lists, dictionaries, tuples, and JSON values can be indexed");
+                    throw ParseError(line_, "only lists, dictionaries, tuples, JSON values, and bytes can be indexed");
                 }
                 const auto index = parse_binary(1);
                 if (!accept("]")) throw ParseError(line_, "expected ']' after index");
@@ -1502,6 +1515,18 @@ private:
                         types.second, "sun_dict_at(" + value.cpp + ", " + index.cpp + ")",
                         make_expression(Expression::Kind::call, types.second, "sun_dict_at",
                                         {value.ast, index.ast}));
+                    continue;
+                }
+                if (value.type == Type::bytes) {
+                    if (index.type != Type::integer && index.type != Type::number) {
+                        throw ParseError(line_, "bytes index must have type int or number");
+                    }
+                    value = make_expr_value(
+                        Type::integer,
+                        "sun_bytes_at(" + value.cpp + ", " + as_number(index) + ")",
+                        make_expression(Expression::Kind::call, Type::integer,
+                                        "sun_bytes_at",
+                                        {value.ast, as_number_expression(index)}));
                     continue;
                 }
                 if (value.type.kind == Type::Kind::json) {
@@ -1647,6 +1672,32 @@ private:
                                     std::move(helper_arguments)));
                 continue;
             }
+            if (value.type == Type::bytes) {
+                if (peek().kind != Token::Kind::identifier) {
+                    throw ParseError(line_, "expected a bytes operation after '.'");
+                }
+                const auto operation = take().text;
+                if (operation != "contains") {
+                    throw ParseError(line_, "unknown bytes operation '" + operation + "'");
+                }
+                if (!accept("(")) {
+                    throw ParseError(line_, "bytes operations require parentheses");
+                }
+                const auto arguments = parse_expression_arguments();
+                if (arguments.size() != 1 || !is_numeric(arguments[0].type)) {
+                    throw ParseError(line_, "bytes.contains expects one number or int byte");
+                }
+                const auto value_cpp = arguments[0].type == Type::integer
+                                           ? "static_cast<double>(" + arguments[0].cpp + ")"
+                                           : arguments[0].cpp;
+                value = make_expr_value(
+                    Type::boolean,
+                    "sun_bytes_contains(" + value.cpp + ", " + value_cpp + ")",
+                    make_expression(Expression::Kind::call, Type::boolean,
+                                    "sun_bytes_contains",
+                                    {value.ast, as_number_expression(arguments[0])}));
+                continue;
+            }
             if (is_list_type(value.type)) {
                 if (peek().kind != Token::Kind::identifier) {
                     throw ParseError(line_, "expected a list operation after '.'");
@@ -1703,7 +1754,7 @@ private:
                                     std::move(helper_arguments)));
                 continue;
             }
-            if (value.type == Type::string) {
+            if (value.type == Type::string || value.type == Type::bytes) {
                 if (peek().kind != Token::Kind::identifier) {
                     throw ParseError(line_, "expected a string operation after '.'");
                 }
@@ -1978,7 +2029,7 @@ private:
     ExprValue parse_len_call() {
         const auto value = parse_binary(1);
         if (!accept(")")) throw ParseError(line_, "expected ')' after len argument");
-        if (value.type == Type::string) {
+        if (value.type == Type::string || value.type == Type::bytes) {
             return make_expr_value(
                 Type::integer, "static_cast<std::int64_t>(" + value.cpp + ".size())",
                 make_expression(Expression::Kind::cast, Type::integer, "std::int64_t",
@@ -1993,7 +2044,7 @@ private:
                                 {make_expression(Expression::Kind::member_call, Type::integer,
                                                  "size", {value.ast})}));
         }
-        throw ParseError(line_, "len() requires a string, list, dictionary, or JSON container");
+        throw ParseError(line_, "len() requires a string, bytes, list, dictionary, or JSON container");
     }
 
     ExprValue parse_istype_call() {
@@ -2002,7 +2053,7 @@ private:
             throw ParseError(line_, "istype expects a value and a type, e.g. istype(x, number)");
         }
         if (peek().kind != Token::Kind::identifier) {
-            throw ParseError(line_, "istype type must be a scalar type, list, dict, tuple, region, or ptr");
+            throw ParseError(line_, "istype type must be a scalar type, list, dict, tuple, region, ptr, or bytes");
         }
         const auto target_name = take().text;
         if (target_name == "list" || target_name == "dict" ||
@@ -2241,7 +2292,8 @@ private:
         if (!allow_function_calls_) {
             throw ParseError(line_, "default values cannot call functions");
         }
-        if (name == "write_text" || name == "append_text") {
+        if (name == "write_text" || name == "append_text" ||
+            name == "write_bytes") {
             throw ParseError(line_, "io." + name + " is a statement, not an expression");
         }
         if (name == "createdir") {
@@ -2288,6 +2340,15 @@ private:
                 Type::string, "sun_io_read_text(" + arguments[0].cpp + ")",
                 make_expression(Expression::Kind::call, Type::string, "sun_io_read_text",
                                 {arguments[0].ast}));
+        }
+        if (name == "read_bytes") {
+            if (arguments.size() != 1 || arguments[0].type != Type::string) {
+                throw ParseError(line_, "io.read_bytes expects one string path");
+            }
+            return make_expr_value(
+                Type::bytes, "sun_io_read_bytes(" + arguments[0].cpp + ")",
+                make_expression(Expression::Kind::call, Type::bytes,
+                                "sun_io_read_bytes", {arguments[0].ast}));
         }
         if (name == "open") {
             if (arguments.size() != 2 || arguments[0].type != Type::string ||
@@ -2407,6 +2468,79 @@ private:
         throw ParseError(line_, "unknown json function '" + name + "'");
     }
 
+    ExprValue parse_bytes_call(const std::string& name) {
+        if (!allow_function_calls_) {
+            throw ParseError(line_, "default values cannot call functions");
+        }
+        const auto arguments = parse_expression_arguments();
+        if (name == "from_string") {
+            if (arguments.size() != 1 || arguments[0].type != Type::string) {
+                throw ParseError(line_, "bytes.from_string expects one string");
+            }
+            return make_expr_value(
+                Type::bytes, "sun_bytes_from_string(" + arguments[0].cpp + ")",
+                make_expression(Expression::Kind::call, Type::bytes,
+                                "sun_bytes_from_string", {arguments[0].ast}));
+        }
+        if (name == "to_string") {
+            if (arguments.size() != 1 || arguments[0].type != Type::bytes) {
+                throw ParseError(line_, "bytes.to_string expects one bytes value");
+            }
+            return make_expr_value(
+                Type::string, "sun_bytes_to_string(" + arguments[0].cpp + ")",
+                make_expression(Expression::Kind::call, Type::string,
+                                "sun_bytes_to_string", {arguments[0].ast}));
+        }
+        if (name == "from_list") {
+            if (arguments.size() != 1 ||
+                (arguments[0].type != Type::list_integer &&
+                 arguments[0].type != Type::empty_list)) {
+                throw ParseError(line_, "bytes.from_list expects a list[int]");
+            }
+            const auto cpp = arguments[0].type == Type::empty_list
+                                 ? "SunBytes{}"
+                                 : "sun_bytes_from_list(" + arguments[0].cpp + ")";
+            return make_expr_value(
+                Type::bytes, cpp,
+                make_expression(Expression::Kind::call, Type::bytes,
+                                "sun_bytes_from_list", {arguments[0].ast}));
+        }
+        if (name == "to_list") {
+            if (arguments.size() != 1 || arguments[0].type != Type::bytes) {
+                throw ParseError(line_, "bytes.to_list expects one bytes value");
+            }
+            return make_expr_value(
+                Type::list_integer, "sun_bytes_to_list(" + arguments[0].cpp + ")",
+                make_expression(Expression::Kind::call, Type::list_integer,
+                                "sun_bytes_to_list", {arguments[0].ast}));
+        }
+        if (name == "from_region") {
+            if (!memory_imported_) {
+                throw ParseError(line_, "bytes.from_region requires 'import memory'");
+            }
+            if (arguments.size() != 1 || arguments[0].type != Type::region) {
+                throw ParseError(line_, "bytes.from_region expects one region");
+            }
+            return make_expr_value(
+                Type::bytes, "(" + arguments[0].cpp + ").to_bytes()",
+                make_expression(Expression::Kind::member_call, Type::bytes,
+                                "to_bytes", {arguments[0].ast}));
+        }
+        if (name == "to_region") {
+            if (!memory_imported_) {
+                throw ParseError(line_, "bytes.to_region requires 'import memory'");
+            }
+            if (arguments.size() != 1 || arguments[0].type != Type::bytes) {
+                throw ParseError(line_, "bytes.to_region expects one bytes value");
+            }
+            return make_expr_value(
+                Type::region, "SunMemoryRegion::from_bytes(" + arguments[0].cpp + ")",
+                make_expression(Expression::Kind::call, Type::region,
+                                "SunMemoryRegion::from_bytes", {arguments[0].ast}));
+        }
+        throw ParseError(line_, "unknown bytes function '" + name + "'");
+    }
+
     ExprValue parse_fstring(const std::string& text) {
         std::vector<std::string> parts;
         std::vector<Expression> expressions;
@@ -2473,6 +2607,9 @@ private:
                 }
                 if (value.type == Type::pointer) {
                     throw ParseError(line_, "pointers cannot be interpolated as text");
+                }
+                if (value.type == Type::bytes) {
+                    throw ParseError(line_, "bytes cannot be interpolated directly; convert with bytes.to_string()");
                 }
                 if (value.type.kind == Type::Kind::custom &&
                     !custom_types_.at(value.type.name).is_enum) {
@@ -3128,7 +3265,8 @@ private:
                             if (field_type.kind == Type::Kind::custom ||
                                 field_type.kind == Type::Kind::json ||
                                 field_type == Type::region ||
-                                field_type == Type::pointer || is_list_type(field_type) ||
+                                field_type == Type::pointer || field_type == Type::bytes ||
+                                is_list_type(field_type) ||
                                 is_dictionary_type(field_type) || is_tuple_type(field_type)) {
                                 throw ParseError(line.number,
                                                  "enum payload fields must have scalar types");
@@ -3160,6 +3298,7 @@ private:
                                                     line.number);
                 if (field_type.kind == Type::Kind::custom ||
                     field_type == Type::region || field_type == Type::pointer ||
+                    field_type == Type::bytes ||
                     field_type == Type::empty_list ||
                     is_dictionary_type(field_type) || is_tuple_type(field_type)) {
                     throw ParseError(line.number, "unsupported field type");
@@ -3384,6 +3523,7 @@ private:
                 (declared_type.kind == Type::Kind::custom ||
                  declared_type.kind == Type::Kind::json ||
                  declared_type == Type::region || declared_type == Type::pointer ||
+                 declared_type == Type::bytes ||
                  is_list_type(declared_type) ||
                  is_dictionary_type(declared_type) || is_tuple_type(declared_type))) {
                 throw ParseError(line.number,
@@ -4297,14 +4437,16 @@ private:
         const auto collection = expression(collection_text, line.number, symbols,
                                            math_imported);
         const bool dictionary = is_dictionary_type(collection.type);
-        if (!is_list_type(collection.type) && !dictionary) {
-            throw ParseError(line.number, "for-in loops require a list, dictionary, or range(...)");
+        const bool byte_sequence = collection.type == Type::bytes;
+        if (!is_list_type(collection.type) && !dictionary && !byte_sequence) {
+            throw ParseError(line.number, "for-in loops require a list, dictionary, bytes, or range(...)");
         }
         const auto id = next_loop_id_++;
         const auto variable_name = "sun_each_" + std::to_string(id) + "_" + name;
         auto loop_symbols = symbols;
         const auto item_type = dictionary
                                    ? dictionary_types(collection.type).first
+                               : byte_sequence ? Type::integer
                                    : list_item_type(collection.type);
         loop_symbols[name] = {item_type, variable_name};
         const auto entry_name = dictionary ? "sun_each_entry_" + std::to_string(id) : "";
@@ -4317,7 +4459,10 @@ private:
             throw ParseError(error_line, "for block is missing 'end'");
         }
         ++index;
-        return Statement{ForEachStatement{variable_name, collection.cpp, dictionary,
+        const auto collection_cpp = byte_sequence
+                                        ? "sun_bytes_to_list(" + collection.cpp + ")"
+                                        : collection.cpp;
+        return Statement{ForEachStatement{variable_name, collection_cpp, dictionary,
                                           entry_name, std::move(body)},
                          line.number};
     }
@@ -4484,6 +4629,9 @@ private:
         if (first.type == Type::pointer) {
             throw ParseError(line.number, "pointers cannot be printed directly");
         }
+        if (first.type == Type::bytes) {
+            throw ParseError(line.number, "bytes cannot be printed directly; convert with bytes.to_string() or bytes.to_list()");
+        }
         if (first.type.kind == Type::Kind::custom &&
             !custom_types_.at(first.type.name).is_enum) {
             throw ParseError(line.number, "class and struct values cannot be printed directly");
@@ -4510,6 +4658,9 @@ private:
                 }
                 if (values.back().type == Type::pointer) {
                     throw ParseError(line.number, "pointers cannot be formatted as text");
+                }
+                if (values.back().type == Type::bytes) {
+                    throw ParseError(line.number, "bytes cannot be formatted directly; convert with bytes.to_string()");
                 }
                 if (values.back().type.kind == Type::Kind::custom &&
                     !custom_types_.at(values.back().type.name).is_enum) {
@@ -4742,6 +4893,7 @@ private:
         const auto io_qualified = text.rfind("io.", 0) == 0;
         const auto call = parse_call(io_qualified ? text.substr(3) : text, line.number);
         if (call.first != "write_text" && call.first != "append_text" &&
+            call.first != "write_bytes" &&
             call.first != "close" && call.first != "write" && call.first != "pw") {
             throw ParseError(line.number,
                              "unsupported standalone io operation '" + call.first + "'");
@@ -4785,6 +4937,18 @@ private:
                                    : "sun_to_int(" + line_number.cpp + ")";
             return "sun_io_write_line(" + handle.cpp + ", " + index + ", " +
                    contents.cpp + ");";
+        }
+        if (call.first == "write_bytes") {
+            if (arguments.size() != 2) {
+                throw ParseError(line.number, "io.write_bytes expects a string path and bytes");
+            }
+            const auto path = expression(arguments[0], line.number, symbols, math_imported);
+            const auto contents =
+                expression(arguments[1], line.number, symbols, math_imported);
+            if (path.type != Type::string || contents.type != Type::bytes) {
+                throw ParseError(line.number, "io.write_bytes expects a string path and bytes");
+            }
+            return "sun_io_write_bytes(" + path.cpp + ", " + contents.cpp + ");";
         }
         if (arguments.size() != 2) {
             throw ParseError(line.number, "io." + call.first + " expects (path, contents)");
@@ -4875,6 +5039,9 @@ private:
         const bool json_index =
             left.ast.kind == Expression::Kind::call &&
             left.ast.value == "sun_json_at_ref";
+        const bool bytes_index =
+            left.ast.kind == Expression::Kind::call &&
+            left.ast.value == "sun_bytes_at";
         if (json_index) {
             const auto value = expression(trim(text.substr(equals + 1)), line.number,
                                           symbols, math_imported);
@@ -4943,8 +5110,42 @@ private:
             return "sun_json_set(" + object.cpp + ", " + key_cpp +
                    ", sun_json_from(" + value.cpp + "));";
         }
+        if (bytes_index) {
+            const auto target_text = trim(text.substr(0, equals));
+            const auto open = target_text.find('[');
+            if (open == std::string::npos || target_text.back() != ']') {
+                throw ParseError(line.number, "invalid bytes indexed assignment");
+            }
+            const auto object = expression(target_text.substr(0, open), line.number,
+                                           symbols, math_imported);
+            const auto index = expression(
+                target_text.substr(open + 1, target_text.size() - open - 2),
+                line.number, symbols, math_imported);
+            if (object.type != Type::bytes || object.ast.kind != Expression::Kind::variable ||
+                (index.type != Type::integer && index.type != Type::number)) {
+                throw ParseError(line.number,
+                                 "bytes assignment requires a mutable bytes variable and numeric index");
+            }
+            for (const auto& entry : symbols) {
+                if (entry.second.cpp_name == object.ast.value && entry.second.is_const) {
+                    throw ParseError(line.number, "cannot modify a const bytes value");
+                }
+            }
+            const auto value = expression(trim(text.substr(equals + 1)), line.number,
+                                          symbols, math_imported);
+            if (value.type != Type::integer && value.type != Type::number) {
+                throw ParseError(line.number, "bytes assignment requires an int or number byte value");
+            }
+            const auto to_number = [](const ExprValue& expression) {
+                return expression.type == Type::integer
+                           ? "static_cast<double>(" + expression.cpp + ")"
+                           : expression.cpp;
+            };
+            return "sun_bytes_set(" + object.cpp + ", " + to_number(index) +
+                   ", " + to_number(value) + ");";
+        }
         if (left.cpp.rfind("sun_list_at(", 0) != 0 && !dictionary_index) {
-            throw ParseError(line.number, "indexed assignment requires list[index], dictionary[key], or JSON[index]");
+            throw ParseError(line.number, "indexed assignment requires list[index], dictionary[key], JSON[index], or bytes[index]");
         }
         const auto value = expression(trim(text.substr(equals + 1)), line.number,
                                       symbols, math_imported);
@@ -5021,6 +5222,30 @@ private:
                                                  cpp_type(key_type));
             }
             return "sun_dict_remove(" + object.cpp + ", " + key.cpp + ");";
+        }
+        if (object.type == Type::bytes) {
+            const auto call = parse_call(method + text.substr(open), line.number);
+            const auto arguments = split_arguments(call.second, line.number);
+            if (method == "clear") {
+                if (!arguments.empty()) {
+                    throw ParseError(line.number, "bytes.clear expects no arguments");
+                }
+                return "(" + object.cpp + ").clear();";
+            }
+            if (method == "append") {
+                if (arguments.size() != 1) {
+                    throw ParseError(line.number, "bytes.append expects one byte value");
+                }
+                const auto value = expression(arguments.front(), line.number, symbols,
+                                              math_imported);
+                if (value.type != Type::integer && value.type != Type::number) {
+                    throw ParseError(line.number, "bytes.append expects an int or number byte value");
+                }
+                return "sun_bytes_append(" + object.cpp + ", " +
+                       numeric_value(value) + ");";
+            }
+            throw ParseError(line.number, "unknown bytes statement operation '" +
+                                             method + "'");
         }
         if (is_list_type(object.type)) {
             const auto call = parse_call(method + text.substr(open), line.number);
@@ -5223,9 +5448,12 @@ private:
         const auto append_method = text.find(".append(");
         if (append_method != std::string::npos &&
             is_identifier(trim(text.substr(0, append_method)))) {
-            auto result = parse_list_append(line, text, symbols, math_imported);
-            ++index;
-            return result;
+            const auto target = symbols.find(trim(text.substr(0, append_method)));
+            if (target == symbols.end() || is_list_type(target->second.type)) {
+                auto result = parse_list_append(line, text, symbols, math_imported);
+                ++index;
+                return result;
+            }
         }
         const auto assignment = find_assignment_operator(text);
         if (assignment != std::string::npos &&
@@ -5278,7 +5506,8 @@ private:
         if (method_object != symbols.end() &&
             (method_object->second.type.kind == Type::Kind::custom ||
              is_dictionary_type(method_object->second.type) ||
-             is_list_type(method_object->second.type)) &&
+             is_list_type(method_object->second.type) ||
+             method_object->second.type == Type::bytes) &&
             text.find('(', method_dot) != std::string::npos) {
             auto result = parse_method_statement(line, text, symbols, math_imported);
             ++index;
@@ -5320,6 +5549,7 @@ std::string cpp_type(Type type) {
     case Type::Kind::boolean: return "bool";
     case Type::Kind::region: return "SunMemoryRegion";
     case Type::Kind::pointer: return "SunMemoryPointer";
+    case Type::Kind::bytes: return "SunBytes";
     case Type::Kind::integer: return "std::int64_t";
     case Type::Kind::character: return "std::string";
     case Type::Kind::json: return "SunJson";

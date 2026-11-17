@@ -162,6 +162,35 @@ std::string sun_io_read_text(const std::string& path) {
     return contents;
 }
 
+SunBytes sun_io_read_bytes(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw SunRuntimeError("io.read_bytes could not open file '" + path + "'");
+    }
+    SunBytes contents;
+    for (std::istreambuf_iterator<char> it(file), end; it != end; ++it) {
+        contents.push_back(static_cast<std::uint8_t>(
+            static_cast<unsigned char>(*it)));
+    }
+    if (file.bad()) {
+        throw SunRuntimeError("io.read_bytes failed while reading file '" + path + "'");
+    }
+    return contents;
+}
+
+void sun_io_write_bytes(const std::string& path, const SunBytes& contents) {
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        throw SunRuntimeError("io.write_bytes could not open file '" + path + "'");
+    }
+    for (const auto byte : contents) {
+        file.write(reinterpret_cast<const char*>(&byte), 1);
+        if (!file) {
+            throw SunRuntimeError("io.write_bytes failed while writing file '" + path + "'");
+        }
+    }
+}
+
 void sun_io_write_text(const std::string& path, const std::string& contents) {
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     if (!file) {

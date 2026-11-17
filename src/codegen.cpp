@@ -739,6 +739,71 @@ T sun_list_pop(std::vector<T>& values, double index) {
     values.erase(values.begin() + static_cast<std::ptrdiff_t>(offset));
     return value;
 }
+
+using SunBytes = std::vector<std::uint8_t>;
+
+std::size_t sun_bytes_index(const SunBytes& values, double index) {
+    if (!std::isfinite(index) || index < 0.0 || std::floor(index) != index ||
+        index >= static_cast<double>(values.size())) {
+        throw SunRuntimeError("bytes index out of bounds or not a non-negative integer");
+    }
+    return static_cast<std::size_t>(index);
+}
+
+std::uint8_t sun_bytes_value(double value) {
+    if (!std::isfinite(value) || value < 0.0 || value > 255.0 ||
+        std::floor(value) != value) {
+        throw SunRuntimeError("byte value must be an integer from 0 to 255");
+    }
+    return static_cast<std::uint8_t>(value);
+}
+
+std::int64_t sun_bytes_at(const SunBytes& values, double index) {
+    return static_cast<std::int64_t>(values[sun_bytes_index(values, index)]);
+}
+
+void sun_bytes_set(SunBytes& values, double index, double value) {
+    values[sun_bytes_index(values, index)] = sun_bytes_value(value);
+}
+
+void sun_bytes_append(SunBytes& values, double value) {
+    values.push_back(sun_bytes_value(value));
+}
+
+bool sun_bytes_contains(const SunBytes& values, double value) {
+    const auto byte = sun_bytes_value(value);
+    return std::find(values.begin(), values.end(), byte) != values.end();
+}
+
+SunBytes sun_bytes_from_string(const std::string& value) {
+    SunBytes result;
+    result.reserve(value.size());
+    for (const auto byte : value)
+        result.push_back(static_cast<std::uint8_t>(
+            static_cast<unsigned char>(byte)));
+    return result;
+}
+
+std::string sun_bytes_to_string(const SunBytes& value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const auto byte : value) result.push_back(static_cast<char>(byte));
+    return result;
+}
+
+SunBytes sun_bytes_from_list(const std::vector<std::int64_t>& value) {
+    SunBytes result;
+    result.reserve(value.size());
+    for (const auto byte : value) result.push_back(sun_bytes_value(static_cast<double>(byte)));
+    return result;
+}
+
+std::vector<std::int64_t> sun_bytes_to_list(const SunBytes& value) {
+    std::vector<std::int64_t> result;
+    result.reserve(value.size());
+    for (const auto byte : value) result.push_back(static_cast<std::int64_t>(byte));
+    return result;
+}
 )cpp";
     if (program.io_imported) out << io_runtime_cpp();
     if (program.json_imported) out << json_runtime_cpp();
@@ -759,6 +824,16 @@ public:
 
     double size() const {
         return static_cast<double>(bytes_->size());
+    }
+
+    SunBytes to_bytes() const { return *bytes_; }
+
+    static SunMemoryRegion from_bytes(const SunBytes& bytes) {
+        if (bytes.size() > max_region_size) {
+            throw SunRuntimeError("memory region is too large");
+        }
+        return SunMemoryRegion(
+            std::make_shared<std::vector<std::uint8_t>>(bytes));
     }
 
     double read_u8(double offset) const {

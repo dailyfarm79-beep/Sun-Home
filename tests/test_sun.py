@@ -1748,6 +1748,81 @@ class SunCompilerTests(unittest.TestCase):
         self.assertEqual(executable.stdout, "true\nfalse\nHello Sun\n")
         self.assertEqual(target.read_text(encoding="utf-8"), "Hello Sun")
 
+    def test_bytes_mutate_convert_iterate_and_round_trip_binary_io(self):
+        target = WORK / "bytes-output.bin"
+        result = self.invoke(
+            "bytes.su",
+            "import io\n"
+            "import memory\n"
+            f'let path: string = "{target}"\n'
+            "let data: bytes = bytes.from_list([int(0), int(65), int(255)])\n"
+            "let empty: bytes = bytes.from_list([])\n"
+            "data[1] = int(66)\n"
+            "data.append(10)\n"
+            "print(len(data))\n"
+            "print(len(empty))\n"
+            "print(data.contains(255))\n"
+            "let from_string: bytes = bytes.from_string(bytes.to_string(data))\n"
+            "let buffer: region = bytes.to_region(data)\n"
+            "let from_region: bytes = bytes.from_region(buffer)\n"
+            "let as_list: list[int] = bytes.to_list(data)\n"
+            "print(from_string == data)\n"
+            "print(from_region == data)\n"
+            "print(as_list == bytes.to_list(from_region))\n"
+            "print(istype(data, bytes))\n"
+            "io.write_bytes(path, data)\n"
+            "let loaded: bytes = io.read_bytes(path)\n"
+            "for value in loaded:\n"
+            "    print(value)\n"
+            "end\n"
+            "loaded.clear()\n"
+            "print(len(loaded))\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "bytes")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(
+            executable.stdout,
+            "4\n0\ntrue\ntrue\ntrue\ntrue\ntrue\n0\n66\n255\n10\n0\n",
+        )
+        self.assertEqual(target.read_bytes(), bytes([0, 66, 255, 10]))
+
+    def test_bytes_reject_invalid_values_and_indexes_at_runtime(self):
+        cases = [
+            (
+                "bytes-invalid-value.su",
+                "let data: bytes = bytes.from_list([int(1)])\n"
+                "data[0] = 256\n",
+                "byte value must be an integer from 0 to 255",
+            ),
+            (
+                "bytes-invalid-index.su",
+                "let data: bytes = bytes.from_list([int(1)])\n"
+                "print(data[1])\n",
+                "bytes index out of bounds",
+            ),
+        ]
+        for source_name, source, expected_error in cases:
+            with self.subTest(source=source_name):
+                result = self.invoke(source_name, source, "--compile")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                executable = subprocess.run(
+                    [str(WORK / source_name[:-3])],
+                    cwd=ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertNotEqual(executable.returncode, 0)
+                self.assertIn(expected_error, executable.stderr)
+
     def test_io_lines_directories_file_size_and_remove(self):
         directory = WORK / "io-extra-dir"
         file_path = directory / "lines.txt"

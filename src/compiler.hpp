@@ -144,6 +144,8 @@ struct Expression {
     enum class Kind {
         literal,
         string_literal,
+        formatted_string,
+        string_interpolation,
         variable,
         unary,
         binary,
@@ -168,6 +170,56 @@ struct PrintStatement {
     Expression value;
 };
 
+struct VariableDeclarationStatement {
+    Type type;
+    std::string cpp_name;
+    bool is_const = false;
+    Expression initializer;
+};
+
+struct AssignmentStatement {
+    std::string cpp_name;
+    Expression value;
+};
+
+struct ReturnStatement {
+    std::optional<Expression> value;
+};
+
+struct CallStatement {
+    std::string callee;
+    std::vector<Expression> arguments;
+};
+
+struct MemberCallStatement {
+    Expression receiver;
+    std::string method;
+    std::vector<Expression> arguments;
+};
+
+struct IndexedAssignmentStatement {
+    enum class Kind {
+        list,
+        dictionary,
+        json,
+        bytes
+    };
+    Kind kind;
+    Expression object;
+    Expression key;
+    Expression value;
+};
+
+struct MemberAssignmentStatement {
+    Expression target;
+    Expression value;
+};
+
+struct LoopControlStatement {
+    enum class Kind { break_, continue_ };
+    Kind kind;
+};
+
 struct PrintColorStatement {
     Expression value;
     std::string color_prefix;
@@ -188,7 +240,7 @@ struct DictionaryAssignmentStatement {
 };
 
 struct IfBranch {
-    std::string condition;
+    Expression condition;
     Block body;
 };
 
@@ -224,24 +276,24 @@ struct LocalFunctionStatement {
 };
 
 struct WhileStatement {
-    std::string condition;
+    Expression condition;
     Block body;
 };
 
 struct RangeForStatement {
     std::string start_name;
-    std::string start_value;
+    Expression start_value;
     std::string stop_name;
-    std::string stop_value;
+    Expression stop_value;
     std::string step_name;
-    std::string step_value;
+    Expression step_value;
     std::string variable_name;
     Block body;
 };
 
 struct ForEachStatement {
     std::string variable_name;
-    std::string collection;
+    Expression collection;
     bool dictionary = false;
     std::string entry_name;
     Block body;
@@ -263,13 +315,18 @@ struct TryCatchStatement {
 struct WithOpenStatement {
     std::string guard_name;
     std::string handle_name;
-    std::string path;
-    std::string mode;
+    Expression path;
+    Expression mode;
     Block body;
 };
 
 struct Statement {
-    using Node = std::variant<RawStatement, PrintStatement, PrintColorStatement,
+    using Node = std::variant<RawStatement, VariableDeclarationStatement,
+                              AssignmentStatement, ReturnStatement,
+                              CallStatement, MemberCallStatement,
+                              IndexedAssignmentStatement, MemberAssignmentStatement,
+                              LoopControlStatement,
+                              PrintStatement, PrintColorStatement,
                               DictionaryAssignmentStatement, AssertStatement, RaiseStatement,
                               IfStatement, MatchStatement, LocalFunctionStatement,
                               WhileStatement, RangeForStatement,

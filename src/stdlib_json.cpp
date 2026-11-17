@@ -8,8 +8,16 @@ class SunJson {
 public:
     using Array = std::vector<SunJson>;
     using Object = std::map<std::string, SunJson>;
+    struct ParsedNumber {
+        std::string literal;
+        double approximation;
+
+        friend bool operator==(const ParsedNumber& left, const ParsedNumber& right) {
+            return left.approximation == right.approximation;
+        }
+    };
     using Value = std::variant<std::nullptr_t, bool, std::int64_t, double,
-                               std::string, Array, Object>;
+                               ParsedNumber, std::string, Array, Object>;
 
     SunJson() : value_(nullptr) {}
     explicit SunJson(Value value) : value_(std::move(value)) {}
@@ -188,6 +196,10 @@ public:
                         conversion.ptr == token.data() + token.size()) {
                         return SunJson(SunJson::Value{integer});
                     }
+                    if (conversion.ec != std::errc::result_out_of_range ||
+                        conversion.ptr != token.data() + token.size()) {
+                        fail("invalid number");
+                    }
                 }
                 double number = 0.0;
                 std::size_t parsed = 0;
@@ -200,7 +212,7 @@ public:
                 }
                 if (parsed != token.size() || !std::isfinite(number))
                     fail("number is out of range");
-                return SunJson(SunJson::Value{number});
+                return SunJson(SunJson::Value{ParsedNumber{token, number}});
             }
 
             SunJson parse_array() {
@@ -254,6 +266,8 @@ public:
             return *boolean ? "true" : "false";
         if (const auto* integer = std::get_if<std::int64_t>(&value_))
             return std::to_string(*integer);
+        if (const auto* integer = std::get_if<ParsedNumber>(&value_))
+            return integer->literal;
         if (const auto* number = std::get_if<double>(&value_)) {
             std::ostringstream result;
             result << std::setprecision(std::numeric_limits<double>::max_digits10) << *number;
@@ -283,18 +297,23 @@ public:
     double as_number() const {
         if (const auto* integer = std::get_if<std::int64_t>(&value_))
             return static_cast<double>(*integer);
+        if (const auto* integer = std::get_if<ParsedNumber>(&value_))
+            return integer->approximation;
         const auto* result = std::get_if<double>(&value_);
         if (!result) throw SunRuntimeError("json value is not a number");
         return *result;
     }
     std::int64_t as_int() const {
         if (const auto* integer = std::get_if<std::int64_t>(&value_)) return *integer;
+        if (const auto* parsed = std::get_if<ParsedNumber>(&value_)) {
+            std::int64_t integer = 0;
+            if (parse_int64(parsed->literal, integer)) return integer;
+            throw SunRuntimeError("json value is not an in-range integer");
+        }
         const auto* number = std::get_if<double>(&value_);
+        const double limit = std::ldexp(1.0, 63);
         if (!number || !std::isfinite(*number) || std::floor(*number) != *number ||
-            static_cast<long double>(*number) <
-                static_cast<long double>(std::numeric_limits<std::int64_t>::min()) ||
-            static_cast<long double>(*number) >
-                static_cast<long double>(std::numeric_limits<std::int64_t>::max())) {
+            *number < -limit || *number >= limit) {
             throw SunRuntimeError("json value is not an in-range integer");
         }
         return static_cast<std::int64_t>(*number);
@@ -358,10 +377,39 @@ public:
             throw SunRuntimeError("JSON array index out of bounds");
         return (*array)[static_cast<std::size_t>(index)] = std::move(value);
     }
+    std::int64_t append(SunJson value) {
+        auto* array = std::get_if<Array>(&value_);
+        if (!array) throw SunRuntimeError("JSON value is not an array");
+        if (array->size() >=
+            static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+            throw SunRuntimeError("JSON array size exceeds int range");
+        }
+        array->push_back(std::move(value));
+        return static_cast<std::int64_t>(array->size());
+    }
+    bool contains(const std::string& key) const {
+        const auto* object = std::get_if<Object>(&value_);
+        if (!object) throw SunRuntimeError("JSON value is not an object");
+        return object->find(key) != object->end();
+    }
     SunJson& at(double index) { return at(sun_to_int(index)); }
     const SunJson& at(double index) const { return at(sun_to_int(index)); }
     SunJson& set(double index, SunJson value) { return set(sun_to_int(index), std::move(value)); }
     friend bool operator==(const SunJson& left, const SunJson& right) {
+        const auto* left_parsed = std::get_if<ParsedNumber>(&left.value_);
+        const auto* right_parsed = std::get_if<ParsedNumber>(&right.value_);
+        if (left_parsed) {
+            if (right_parsed)
+                return left_parsed->approximation == right_parsed->approximation;
+            if (const auto* right_number = std::get_if<double>(&right.value_))
+                return left_parsed->approximation == *right_number;
+            return false;
+        }
+        if (right_parsed) {
+            if (const auto* left_number = std::get_if<double>(&left.value_))
+                return *left_number == right_parsed->approximation;
+            return false;
+        }
         return left.value_ == right.value_;
     }
     friend bool operator!=(const SunJson& left, const SunJson& right) {
@@ -394,8 +442,85 @@ private:
         return result + '"';
     }
 
+    static bool parse_int64(const std::string& token, std::int64_t& result) {
+        std::size_t position = 0;
+        bool negative = false;
+        if (token[position] == '-') {
+            negative = true;
+            ++position;
+        }
+
+        std::string digits;
+        std::int64_t fractional_digits = 0;
+        while (position < token.size() &&
+               token[position] >= '0' && token[position] <= '9') {
+            digits.push_back(token[position++]);
+        }
+        if (position < token.size() && token[position] == '.') {
+            ++position;
+            while (position < token.size() &&
+                   token[position] >= '0' && token[position] <= '9') {
+                digits.push_back(token[position++]);
+                ++fractional_digits;
+            }
+        }
+
+        std::int64_t exponent = 0;
+        if (position < token.size() &&
+            (token[position] == 'e' || token[position] == 'E')) {
+            ++position;
+            bool exponent_negative = false;
+            if (position < token.size() &&
+                (token[position] == '+' || token[position] == '-')) {
+                exponent_negative = token[position] == '-';
+                ++position;
+            }
+            while (position < token.size() &&
+                   token[position] >= '0' && token[position] <= '9') {
+                exponent = std::min<std::int64_t>(
+                    1000000, exponent * 10 + token[position++] - '0');
+            }
+            if (exponent_negative) exponent = -exponent;
+        }
+
+        const auto first_nonzero = digits.find_first_not_of('0');
+        if (first_nonzero == std::string::npos) {
+            result = 0;
+            return true;
+        }
+        digits.erase(0, first_nonzero);
+
+        const auto scale = exponent - fractional_digits;
+        if (scale < 0) {
+            const auto trailing_zeros = static_cast<std::size_t>(-scale);
+            if (trailing_zeros > digits.size()) return false;
+            for (std::size_t i = digits.size() - trailing_zeros;
+                 i < digits.size(); ++i) {
+                if (digits[i] != '0') return false;
+            }
+            digits.resize(digits.size() - trailing_zeros);
+        } else if (scale > 0) {
+            if (scale > 19 ||
+                digits.size() + static_cast<std::size_t>(scale) > 19) {
+                return false;
+            }
+            digits.append(static_cast<std::size_t>(scale), '0');
+        }
+        if (digits.size() > 19) return false;
+
+        const std::string signed_digits = negative ? "-" + digits : digits;
+        const auto conversion = std::from_chars(
+            signed_digits.data(), signed_digits.data() + signed_digits.size(), result);
+        return conversion.ec == std::errc{} &&
+               conversion.ptr == signed_digits.data() + signed_digits.size();
+    }
+
     Value value_;
 };
+
+std::int64_t sun_json_append(SunJson& array, SunJson value) {
+    return array.append(std::move(value));
+}
 
 inline SunJson sun_json_from(const SunJson& value) { return value; }
 inline SunJson sun_json_from(bool value) { return SunJson(SunJson::Value{value}); }

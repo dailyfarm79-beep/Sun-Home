@@ -1,5 +1,5 @@
 def greet(name)
-    print(f"Hello, {name}!")
+    printc("Olá", "red")
     print("Seu nome e %v.", %v=name)
 end
 

@@ -297,7 +297,7 @@ class SunCompilerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         generated = (WORK / "greeting.cpp").read_text(encoding="utf-8")
         self.assertIn("void sun_fn_greet(std::string sun_arg_name)", generated)
-        self.assertIn('std::string("Hello, ")', generated)
+        self.assertIn('std::string("Hello, ", 7)', generated)
         self.assertIn("sun_arg_name", generated)
 
         executable = subprocess.run(
@@ -552,6 +552,33 @@ class SunCompilerTests(unittest.TestCase):
             "true\ntrue\ntrue\n",
         )
 
+    def test_string_count_counts_non_overlapping_matches_and_rejects_empty_search(self):
+        result = self.invoke(
+            "string-count.su",
+            'print("aaaa".count("aa"))\n'
+            'print("banana".count("na"))\n'
+            'print("banana".count("xyz"))\n'
+            "try:\n"
+            '    print("abc".count(""))\n'
+            "catch error:\n"
+            "    print(error)\n"
+            "end\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "string-count")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(
+            executable.stdout,
+            "2\n2\n0\nstring.count search text cannot be empty\n",
+        )
+
     def test_string_split_and_replace_reject_empty_search_values_at_runtime(self):
         for operation, expression, expected_error in [
             ("split", '"a".split("")', "string.split separator cannot be empty"),
@@ -592,7 +619,9 @@ class SunCompilerTests(unittest.TestCase):
             '    print(f"count={count + int(1)}, double={double(2.5)}, item={items[0]}")\n'
             '    print(f"brace={char(\\"}\\")}")\n'
             'end\n'
-            'greet("Sun")\n',
+            'const constant_label: string = f"answer={int(3) + int(1)}"\n'
+            'greet("Sun")\n'
+            'print(constant_label)\n',
             "--compile",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -606,7 +635,8 @@ class SunCompilerTests(unittest.TestCase):
         self.assertEqual(executable.returncode, 0, executable.stderr)
         self.assertEqual(
             executable.stdout,
-            "Hello, Sun! {welcome} again\ncount=4, double=5, item=7\nbrace=}\n",
+            "Hello, Sun! {welcome} again\ncount=4, double=5, item=7\n"
+            "brace=}\nanswer=4\n",
         )
 
     def test_f_string_reports_errors_in_embedded_expressions(self):
@@ -1217,6 +1247,35 @@ class SunCompilerTests(unittest.TestCase):
         self.assertEqual(
             executable.stdout,
             "".join(f"{message}\n" for _, message in cases),
+        )
+
+    def test_int_conversion_accepts_signed_boundaries_in_constant_and_runtime_paths(self):
+        result = self.invoke(
+            "integer-conversion-boundaries.su",
+            "def convert(value: number): int\n"
+            "    return int(value)\n"
+            "end\n"
+            "print(int(-9223372036854775808.0))\n"
+            "print(int(9223372036854774784.0))\n"
+            "print(convert(-9223372036854775808.0))\n"
+            "print(convert(9223372036854774784.0))\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "integer-conversion-boundaries")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(
+            executable.stdout,
+            "-9223372036854775808\n"
+            "9223372036854774784\n"
+            "-9223372036854775808\n"
+            "9223372036854774784\n",
         )
 
     def test_numeric_precedence_fractional_division_and_nested_conditions(self):
@@ -1844,6 +1903,60 @@ class SunCompilerTests(unittest.TestCase):
         )
         self.assertEqual(target.read_bytes(), bytes([0, 66, 255, 10]))
 
+    def test_bytes_regions_and_custom_values_have_readable_string_forms(self):
+        result = self.invoke(
+            "value-formatting.su",
+            "import memory\n"
+            "struct Point\n"
+            "    x: int\n"
+            "    y: int\n"
+            "end\n"
+            "class NamedPoint\n"
+            "    name: string\n"
+            "    values: list[int]\n"
+            "    def init(name: string)\n"
+            "        self.name = name\n"
+            "        self.values = [int(3), int(4)]\n"
+            "    end\n"
+            "end\n"
+            "class LabeledPoint(NamedPoint)\n"
+            "    label: string\n"
+            "end\n"
+            "let empty: bytes = bytes.from_list([])\n"
+            "let data: bytes = bytes.from_list([int(0), int(65), int(255)])\n"
+            "let region: region = memory.alloc(0)\n"
+            "let point: Point = Point(int(2), int(5))\n"
+            'let named: LabeledPoint = LabeledPoint("origin")\n'
+            'named.label = "start"\n'
+            "print(empty)\n"
+            "print(data)\n"
+            'print(f"bytes={data}; empty={empty}")\n'
+            'print("formatted %v | %v | %v", %v=data, %v=region, %v=point)\n'
+            "print(region)\n"
+            "print(f\"{region}\")\n"
+            "print(point)\n"
+            "print(f\"{named}\")\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "value-formatting")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(
+            executable.stdout,
+            "[]\n[0, 65, 255]\n"
+            "bytes=[0, 65, 255]; empty=[]\n"
+            "formatted [0, 65, 255] | region(size=0) | Point{x=2, y=5}\n"
+            "region(size=0)\nregion(size=0)\n"
+            "Point{x=2, y=5}\n"
+            "LabeledPoint{name=origin, values=[3, 4], label=start}\n",
+        )
+
     def test_bytes_reject_invalid_values_and_indexes_at_runtime(self):
         cases = [
             (
@@ -2047,8 +2160,13 @@ class SunCompilerTests(unittest.TestCase):
             'print(data["profile"]["name"].as_string())\n'
             'print(data["items"][0].as_int())\n'
             'print(data["items"][1].as_bool())\n'
+            'print(data["profile"].contains("name"))\n'
+            'print(data["profile"].contains("missing"))\n'
             'data["profile"]["name"] = "Grace"\n'
             'data["items"][0] = int(2)\n'
+            'let appended: int = data["items"].append("tail")\n'
+            'data["items"].append(data["profile"])\n'
+            "print(appended)\n"
             "print(json.dumps(data))\n"
             'let labels: dict[string, string] = {"name": "Ada"}\n'
             "print(json.dumps(labels))\n"
@@ -2067,8 +2185,103 @@ class SunCompilerTests(unittest.TestCase):
         self.assertEqual(executable.returncode, 0, executable.stderr)
         self.assertEqual(
             executable.stdout,
-            '3\nAda\n1\ntrue\n{"items":[2,true,null],"profile":{"name":"Grace"}}\n'
+            '3\nAda\n1\ntrue\ntrue\nfalse\n4\n'
+            '{"items":[2,true,null,"tail",{"name":"Grace"}],"profile":{"name":"Grace"}}\n'
             '{"name":"Ada"}\n[1,2]\n',
+        )
+
+    def test_json_mutators_reject_wrong_container(self):
+        result = self.invoke(
+            "json-mutator-types.su",
+            "import json\n"
+            'let object: json = json.loads("{}")\n'
+            'let array: json = json.loads("[]")\n'
+            "try:\n"
+            "    object.append(1)\n"
+            "catch error:\n"
+            "    print(error)\n"
+            "end\n"
+            "try:\n"
+            '    print(array.contains("key"))\n'
+            "catch error:\n"
+            "    print(error)\n"
+            "end\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "json-mutator-types")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(
+            executable.stdout,
+            "JSON value is not an array\nJSON value is not an object\n",
+        )
+
+    def test_json_integer_boundaries_preserve_large_integer_values(self):
+        result = self.invoke(
+            "json-integer-boundaries.su",
+            "import json\n"
+            'print(json.loads("-9223372036854775808").as_int())\n'
+            'print(json.loads("9223372036854774784").as_int())\n'
+            'print(json.loads("[42]")[0].as_int())\n'
+            'print(json.loads("1.2e1").as_int())\n'
+            'print(json.loads("1.0") == json.loads("1.00"))\n'
+            'print(json.loads("1.0") != json.loads("2.0"))\n'
+            'let below: json = json.loads("-9223372036854775809")\n'
+            'let above: json = json.loads("9223372036854775808")\n'
+            'let fractional: json = json.loads("-9223372036854775808.1")\n'
+            "print(json.dumps(below))\n"
+            "print(json.dumps(above))\n"
+            "try:\n"
+            "    print(below.as_int())\n"
+            "catch error:\n"
+            "    print(error)\n"
+            "end\n"
+            "try:\n"
+            "    print(above.as_int())\n"
+            "catch error:\n"
+            "    print(error)\n"
+            "end\n"
+            "try:\n"
+            "    print(fractional.as_int())\n"
+            "catch error:\n"
+            "    print(error)\n"
+            "end\n"
+            "try:\n"
+            '    let out_of_range: json = json.loads("1e400")\n'
+            "catch error:\n"
+            "    print(error)\n"
+            "end\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "json-integer-boundaries")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(
+            executable.stdout,
+            "-9223372036854775808\n"
+            "9223372036854774784\n"
+            "42\n"
+            "12\n"
+            "true\n"
+            "true\n"
+            "-9223372036854775809\n"
+            "9223372036854775808\n"
+            "json value is not an in-range integer\n"
+            "json value is not an in-range integer\n"
+            "json value is not an in-range integer\n"
+            "json.loads number is out of range at byte 5\n",
         )
 
     def test_json_requires_import_and_reports_invalid_json(self):
@@ -2127,7 +2340,7 @@ class SunCompilerTests(unittest.TestCase):
         self.assertEqual(executable.returncode, 0, executable.stderr)
         self.assertEqual(executable.stdout, "7\n")
 
-    def test_memory_requires_import_and_rejects_regions_as_text(self):
+    def test_memory_requires_import_and_formats_regions_as_text(self):
         missing_import = self.invoke(
             "memory-missing-import.su",
             "let size: number = memory.size(1)\n",
@@ -2147,9 +2360,18 @@ class SunCompilerTests(unittest.TestCase):
             "import memory\n"
             "let buffer: region = memory.alloc(1)\n"
             "print(buffer)\n",
+            "--compile",
         )
-        self.assertNotEqual(print_region.returncode, 0)
-        self.assertIn("memory regions cannot be printed directly", print_region.stderr)
+        self.assertEqual(print_region.returncode, 0, print_region.stderr)
+        executable = subprocess.run(
+            [str(WORK / "memory-print-region")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(executable.stdout, "region(size=1)\n")
 
     def test_memory_runtime_checks_allocation_offsets_and_byte_values(self):
         cases = [
@@ -3026,11 +3248,32 @@ class SunCompilerTests(unittest.TestCase):
                       result.stderr)
         self.assertIn("= help: Check the function declaration", result.stderr)
 
-    def test_rejects_nul_in_string_literal(self):
-        result = self.invoke("nul-string.su", 'print("before\x00after")\n')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("error: NUL byte is not allowed in string literal", result.stderr)
-        self.assertFalse((WORK / "nul-string.cpp").exists())
+    def test_string_nul_escape_and_raw_nul_boundary(self):
+        result = self.invoke(
+            "nul-string.su",
+            'let value: string = "before\\0after"\n'
+            "let digit: string = \"A\\01\"\n"
+            "print(len(value))\n"
+            "print(value)\n"
+            "print(len(digit))\n"
+            "print(digit)\n",
+            "--compile",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [str(WORK / "nul-string")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        self.assertEqual(executable.stdout, "12\nbefore\x00after\n3\nA\x001\n")
+
+        raw_nul = self.invoke("raw-nul-string.su", 'print("before\x00after")\n')
+        self.assertNotEqual(raw_nul.returncode, 0)
+        self.assertIn("error: NUL byte is not allowed in string literal", raw_nul.stderr)
+        self.assertFalse((WORK / "raw-nul-string.cpp").exists())
 
 
 if __name__ == "__main__":

@@ -147,6 +147,31 @@ std::optional<ConstantValue> evaluate_constant(const Expression& expression) {
         return std::nullopt;
     case Expression::Kind::string_literal:
         return ConstantValue{expression.value};
+    case Expression::Kind::formatted_string: {
+        std::string result;
+        for (const auto& part : expression.children) {
+            const auto value = evaluate_constant(part);
+            if (!value || !std::holds_alternative<std::string>(*value)) {
+                return std::nullopt;
+            }
+            result += std::get<std::string>(*value);
+        }
+        return ConstantValue{std::move(result)};
+    }
+    case Expression::Kind::string_interpolation: {
+        const auto value = child(0);
+        if (!value) return std::nullopt;
+        if (const auto* text = std::get_if<std::string>(&*value)) {
+            return ConstantValue{*text};
+        }
+        if (const auto* boolean = std::get_if<bool>(&*value)) {
+            return ConstantValue{*boolean ? std::string("true") : std::string("false")};
+        }
+        if (const auto* integer = std::get_if<std::int64_t>(&*value)) {
+            return ConstantValue{std::to_string(*integer)};
+        }
+        return std::nullopt;
+    }
     case Expression::Kind::cast: {
         if (expression.value != "double" || expression.children.size() != 1) {
             return std::nullopt;
@@ -271,9 +296,8 @@ std::optional<ConstantValue> evaluate_constant(const Expression& expression) {
             if (!number || !std::isfinite(*number) || std::floor(*number) != *number) {
                 return std::nullopt;
             }
-            const auto wide = static_cast<long double>(*number);
-            if (wide < static_cast<long double>(std::numeric_limits<std::int64_t>::min()) ||
-                wide > static_cast<long double>(std::numeric_limits<std::int64_t>::max())) {
+            const double limit = std::ldexp(1.0, 63);
+            if (*number < -limit || *number >= limit) {
                 return std::nullopt;
             }
             return ConstantValue{static_cast<std::int64_t>(*number)};

@@ -15,6 +15,8 @@ build/sun examples/hello.su --compile
 
 O guia completo de instalacao, compilacao, sintaxe, exemplos e diagnostico esta
 em [HOWUSE.md](HOWUSE.md).
+A especificacao versionada das regras atualmente implementadas esta em
+[SUN-SPEC.md](SUN-SPEC.md).
 
 ## Recursos atuais
 

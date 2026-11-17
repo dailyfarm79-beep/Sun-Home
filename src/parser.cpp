@@ -1,5 +1,6 @@
 #include "compiler.hpp"
 #include "constant_evaluator.hpp"
+#include "expression_codegen.hpp"
 #include "lexer.hpp"
 
 #include <algorithm>
@@ -69,27 +70,18 @@ Expression make_expression(Expression::Kind kind, Type type, std::string value,
 }
 
 std::string cpp_string(const std::string& value);
+std::string cpp_std_string(const std::string& value);
 
 std::string constant_cpp(const Expression& expression) {
-    if (expression.kind == Expression::Kind::string_literal) {
-        return "std::string(" + cpp_string(expression.value) + ")";
-    }
-    if (expression.type == Type::integer) {
-        const auto min = std::numeric_limits<std::int64_t>::min();
-        if (expression.value == std::to_string(min)) {
-            return "std::numeric_limits<std::int64_t>::min()";
-        }
-        return "std::int64_t{" + expression.value + "}";
-    }
-    return expression.value;
+    return emit_expression(expression);
 }
 
-ExprValue make_expr_value(Type type, std::string cpp, Expression ast,
+ExprValue make_expr_value(Type type, std::string, Expression ast,
                           std::optional<std::string> plain_string = std::nullopt) {
     if (auto constant = fold_constant_expression(type, ast)) {
         ast = std::move(*constant);
-        cpp = constant_cpp(ast);
     }
+    auto cpp = emit_expression(ast);
     return {type, std::move(cpp), std::move(plain_string), std::move(ast)};
 }
 
@@ -959,6 +951,11 @@ std::string cpp_string(const std::string& value) {
     return result.str();
 }
 
+std::string cpp_std_string(const std::string& value) {
+    return "std::string(" + cpp_string(value) + ", " +
+           std::to_string(value.size()) + ')';
+}
+
 class ExpressionParser {
 public:
     ExpressionParser(const std::string& source, std::size_t line, const Symbols& symbols,
@@ -1222,7 +1219,7 @@ private:
             const auto token = take();
             if (token.fstring) return parse_fstring(token.text);
             return parse_postfix(make_expr_value(
-                Type::string, "std::string(" + cpp_string(token.text) + ")",
+                Type::string, cpp_std_string(token.text),
                 make_expression(Expression::Kind::string_literal, Type::string, token.text),
                 token.text));
         }
@@ -1396,7 +1393,7 @@ private:
                 if (!accept("(")) {
                     throw ParseError(line_, "expected '(' after JSON function name");
                 }
-                return parse_json_call(name);
+                return parse_postfix(parse_json_call(name));
             }
             if (name == "bytes" && accept(".")) {
                 if (peek().kind != Token::Kind::identifier) {
@@ -1569,11 +1566,75 @@ private:
                     throw ParseError(line_, "JSON value operations require parentheses");
                 }
                 const auto arguments = parse_expression_arguments();
+                Type result_type = Type::string;
+                std::string method;
+                if (operation == "append") {
+                    if (arguments.size() != 1) {
+                        throw ParseError(line_, "json.append expects one JSON-compatible value");
+                    }
+                    const auto& item = arguments.front();
+                    const bool serializable = item.type == Type::string ||
+                                              item.type == Type::character ||
+                                              item.type == Type::number ||
+                                              item.type == Type::integer ||
+                                              item.type == Type::boolean ||
+                                              item.type.kind == Type::Kind::json ||
+                                              is_list_type(item.type) ||
+                                              (is_dictionary_type(item.type) &&
+                                               dictionary_types(item.type).first ==
+                                                   Type::string);
+                    if (!serializable) {
+                        throw ParseError(line_,
+                                         "json.append requires a JSON value, scalar, list, or dict[string, value]");
+                    }
+                    const Expression* root = &value.ast;
+                    while (root->kind == Expression::Kind::call &&
+                           root->value == "sun_json_at_ref") {
+                        root = &root->children.front();
+                    }
+                    if (root->kind != Expression::Kind::variable) {
+                        throw ParseError(line_,
+                                         "json.append requires a mutable JSON variable or indexed value");
+                    }
+                    for (const auto& entry : symbols_) {
+                        if (entry.second.cpp_name == root->value &&
+                            entry.second.is_const) {
+                            throw ParseError(line_,
+                                             "cannot modify a const JSON value");
+                        }
+                    }
+                    method = "append";
+                    result_type = Type::integer;
+                    auto converted_item = make_expression(
+                        Expression::Kind::call, value.type, "sun_json_from",
+                        {item.ast});
+                    value = make_expr_value(
+                        result_type,
+                        "sun_json_append(" + value.cpp + ", sun_json_from(" +
+                            item.cpp + "))",
+                        make_expression(Expression::Kind::call, result_type,
+                                        "sun_json_append",
+                                        {value.ast, std::move(converted_item)}));
+                    continue;
+                }
+                if (operation == "contains") {
+                    if (arguments.size() != 1 ||
+                        arguments.front().type != Type::string) {
+                        throw ParseError(line_,
+                                         "json.contains expects one string key");
+                    }
+                    method = "contains";
+                    result_type = Type::boolean;
+                    value = make_expr_value(
+                        result_type, "(" + value.cpp + ").contains(" +
+                                        arguments.front().cpp + ")",
+                        make_expression(Expression::Kind::member_call, result_type,
+                                        method, {value.ast, arguments.front().ast}));
+                    continue;
+                }
                 if (!arguments.empty()) {
                     throw ParseError(line_, "json." + operation + " expects no arguments");
                 }
-                Type result_type = Type::string;
-                std::string method;
                 if (operation == "as_string") method = "as_string";
                 else if (operation == "as_number") {
                     method = "as_number";
@@ -1762,8 +1823,12 @@ private:
                 if (operation != "upper" && operation != "lower" &&
                     operation != "trim" && operation != "split" &&
                     operation != "replace" && operation != "contains" &&
-                    operation != "starts_with" && operation != "ends_with") {
+                    operation != "starts_with" && operation != "ends_with" &&
+                    operation != "count") {
                     throw ParseError(line_, "unknown string operation '" + operation + "'");
+                }
+                if (operation == "count" && value.type != Type::string) {
+                    throw ParseError(line_, "string.count is only available on string values");
                 }
                 if (!accept("(")) {
                     throw ParseError(line_, "string operations require parentheses");
@@ -1786,6 +1851,7 @@ private:
                                                 " string argument(s)");
                 }
                 const auto result_type = operation == "split" ? Type::list_string :
+                    operation == "count" ? Type::integer :
                     operation == "contains" || operation == "starts_with" ||
                             operation == "ends_with"
                         ? Type::boolean : Type::string;
@@ -2543,7 +2609,7 @@ private:
 
     ExprValue parse_fstring(const std::string& text) {
         std::vector<std::string> parts;
-        std::vector<Expression> expressions;
+        std::vector<Expression> expression_parts;
         std::string literal;
         const auto interpolation_end = [&](std::size_t open) {
             std::size_t parentheses = 0;
@@ -2577,9 +2643,9 @@ private:
         };
         auto flush_literal = [&]() {
             if (literal.empty()) return;
-            parts.push_back("std::string(" + cpp_string(literal) + ")");
-            expressions.push_back(make_expression(Expression::Kind::string_literal,
-                                                  Type::string, literal));
+            parts.push_back(cpp_std_string(literal));
+            expression_parts.push_back(make_expression(
+                Expression::Kind::string_literal, Type::string, literal));
             literal.clear();
         };
         for (std::size_t i = 0; i < text.size();) {
@@ -2602,22 +2668,16 @@ private:
                     source, line_, symbols_, math_imported_, memory_imported_, io_imported_,
                     json_imported_,
                     signatures_, types_, custom_types_, allow_function_calls_).parse();
-                if (value.type == Type::region) {
-                    throw ParseError(line_, "memory regions cannot be interpolated as text");
-                }
                 if (value.type == Type::pointer) {
                     throw ParseError(line_, "pointers cannot be interpolated as text");
                 }
-                if (value.type == Type::bytes) {
-                    throw ParseError(line_, "bytes cannot be interpolated directly; convert with bytes.to_string()");
-                }
                 if (value.type.kind == Type::Kind::custom &&
-                    !custom_types_.at(value.type.name).is_enum) {
-                    throw ParseError(line_, "class and struct values cannot be interpolated directly");
+                    custom_types_.at(value.type.name).is_error) {
+                    throw ParseError(line_, "error values cannot be interpolated directly");
                 }
                 parts.push_back("sun_to_string(" + value.cpp + ")");
-                expressions.push_back(make_expression(
-                    Expression::Kind::call, Type::string, "sun_to_string",
+                expression_parts.push_back(make_expression(
+                    Expression::Kind::string_interpolation, Type::string, "",
                     {value.ast}));
                 i = close + 1;
                 continue;
@@ -2635,19 +2695,16 @@ private:
         flush_literal();
         if (parts.empty()) {
             parts.push_back("std::string(\"\")");
-            expressions.push_back(make_expression(Expression::Kind::string_literal,
-                                                  Type::string, ""));
+            expression_parts.push_back(make_expression(
+                Expression::Kind::string_literal, Type::string, ""));
         }
         std::ostringstream code;
         for (std::size_t i = 0; i < parts.size(); ++i) {
             if (i) code << " + ";
             code << parts[i];
         }
-        auto value = expressions.front();
-        for (std::size_t i = 1; i < expressions.size(); ++i) {
-            value = make_expression(Expression::Kind::binary, Type::string, "+",
-                                    {std::move(value), std::move(expressions[i])});
-        }
+        auto value = make_expression(Expression::Kind::formatted_string, Type::string,
+                                     "", std::move(expression_parts));
         return make_expr_value(Type::string, code.str(), std::move(value));
     }
 
@@ -3865,7 +3922,7 @@ private:
         bool has_else = false;
 
         IfStatement statement;
-        statement.branches.push_back({condition.cpp, std::move(branch)});
+        statement.branches.push_back({condition.ast, std::move(branch)});
         while (index < lines_.size() && starts_word(lines_[index].text, "elif")) {
             const auto branch_line = lines_[index];
             auto elif_condition = parse_condition(branch_line, "elif", symbols, math_imported);
@@ -3874,7 +3931,7 @@ private:
             branch_returns = false;
             branch = parse_block(index, branch_symbols, math_imported, &branch_returns);
             all_branches_return = all_branches_return && branch_returns;
-            statement.branches.push_back({elif_condition.cpp, std::move(branch)});
+            statement.branches.push_back({elif_condition.ast, std::move(branch)});
         }
         if (index < lines_.size() && starts_word(lines_[index].text, "else")) {
             if (lines_[index].text != "else:") {
@@ -4305,7 +4362,7 @@ private:
             throw ParseError(error_line, "while block is missing 'end'");
         }
         ++index;
-        return Statement{WhileStatement{condition.cpp, std::move(body)}, line.number};
+        return Statement{WhileStatement{condition.ast, std::move(body)}, line.number};
     }
 
     Statement parse_with_open(std::size_t& index, Symbols& symbols,
@@ -4372,7 +4429,7 @@ private:
         ++index;
         if (definitely_returns) *definitely_returns = body_returns;
         return Statement{
-            WithOpenStatement{guard_name, handle_name, path.cpp, mode.cpp,
+            WithOpenStatement{guard_name, handle_name, path.ast, mode.ast,
                               std::move(body)},
             line.number};
     }
@@ -4410,7 +4467,7 @@ private:
                 throw ParseError(line.number, "range arguments must have type number or int");
             }
             if (value.type == Type::integer) {
-                value.cpp = "static_cast<double>(" + value.cpp + ")";
+                value.ast = converted_expression(Type::number, value.type, value.ast);
                 value.type = Type::number;
             }
             values.push_back(std::move(value));
@@ -4421,9 +4478,12 @@ private:
         const auto stop_name = "sun_for_stop_" + std::to_string(id);
         const auto step_name = "sun_for_step_" + std::to_string(id);
         const auto variable_name = "sun_loop_" + std::to_string(id) + "_" + name;
-        const auto start_value = values[0].cpp;
-        const auto stop_value = values[1].cpp;
-        const auto step_value = values.size() == 3 ? values[2].cpp : "1.0";
+        const auto start_value = values[0].ast;
+        const auto stop_value = values[1].ast;
+        const auto step_value = values.size() == 3
+                                    ? values[2].ast
+                                    : make_expression(Expression::Kind::literal,
+                                                      Type::number, "1.0");
 
         ++index;
         Symbols loop_symbols = symbols;
@@ -4472,15 +4532,19 @@ private:
             throw ParseError(error_line, "for block is missing 'end'");
         }
         ++index;
-        const auto collection_cpp = byte_sequence
-                                        ? "sun_bytes_to_list(" + collection.cpp + ")"
-                                        : collection.cpp;
-        return Statement{ForEachStatement{variable_name, collection_cpp, dictionary,
+        auto collection_expression = collection.ast;
+        if (byte_sequence) {
+            collection_expression = make_expression(
+                Expression::Kind::call, list_type_for(Type::integer),
+                "sun_bytes_to_list", {std::move(collection_expression)});
+        }
+        return Statement{ForEachStatement{variable_name, std::move(collection_expression),
+                                          dictionary,
                                           entry_name, std::move(body)},
                          line.number};
     }
 
-    std::string parse_let(const SourceLine& line, Symbols& symbols, bool math_imported) {
+    Statement parse_let(const SourceLine& line, Symbols& symbols, bool math_imported) {
         const auto declaration = trim(line.text.substr(3));
         const auto equals = declaration.find('=');
         if (equals == std::string::npos) {
@@ -4509,15 +4573,18 @@ private:
             throw ParseError(line.number, "cannot initialize " + cpp_type(type) +
                                            " with a " + cpp_type(value.type) + " value");
         }
-        symbols.emplace(name, Symbol{type, "sun_var_" + name});
-        const auto initial_value = value.type == Type::empty_list ||
-                                           value.type == Type::empty_dictionary
-                                       ? "{}"
-            : converted_value(type, value.type, value.cpp);
-        return cpp_type(type) + " sun_var_" + name + " = " + initial_value + ";";
+        const auto cpp_name = "sun_var_" + name;
+        symbols.emplace(name, Symbol{type, cpp_name});
+        auto initializer = value.type == Type::empty_list ||
+                                   value.type == Type::empty_dictionary
+                               ? value.ast
+                               : converted_expression(type, value.type, value.ast);
+        return Statement{
+            VariableDeclarationStatement{type, cpp_name, false, std::move(initializer)},
+            line.number};
     }
 
-    std::string parse_const(const SourceLine& line, Symbols& symbols, bool math_imported) {
+    Statement parse_const(const SourceLine& line, Symbols& symbols, bool math_imported) {
         const auto declaration = trim(line.text.substr(5));
         const auto equals = find_assignment_operator(declaration);
         if (equals == std::string::npos) {
@@ -4553,12 +4620,13 @@ private:
         }
         const auto cpp_name = "sun_const_" + name;
         symbols.emplace(name, Symbol{type, cpp_name, true, *folded});
-        return "const " + cpp_type(type) + " " + cpp_name + " = " +
-               constant_cpp(*folded) + ";";
+        return Statement{
+            VariableDeclarationStatement{type, cpp_name, true, std::move(*folded)},
+            line.number};
     }
 
-    std::string parse_assignment(const SourceLine& line, Symbols& symbols,
-                                 bool math_imported) const {
+    Statement parse_assignment(const SourceLine& line, Symbols& symbols,
+                               bool math_imported) const {
         const auto equals = line.text.find('=');
         const auto name = trim(line.text.substr(0, equals));
         const auto found = symbols.find(name);
@@ -4575,15 +4643,18 @@ private:
                                            " to " + cpp_type(found->second.type) + " value '" +
                                            name + "'");
         }
-        const auto assigned = value.type == Type::empty_list ||
-                                      value.type == Type::empty_dictionary
-                                  ? "{}"
-            : converted_value(found->second.type, value.type, value.cpp);
-        return found->second.cpp_name + " = " + assigned + ";";
+        auto assigned = value.type == Type::empty_list ||
+                                value.type == Type::empty_dictionary
+                            ? value.ast
+                            : converted_expression(found->second.type, value.type,
+                                                   value.ast);
+        return Statement{AssignmentStatement{found->second.cpp_name,
+                                             std::move(assigned)},
+                         line.number};
     }
 
-    std::string parse_return(const SourceLine& line, Symbols& symbols, bool math_imported,
-                             bool* returns) const {
+    Statement parse_return(const SourceLine& line, Symbols& symbols, bool math_imported,
+                           bool* returns) const {
         if (inside_finally_) {
             throw ParseError(line.number, "'return' is not allowed inside a 'finally' block");
         }
@@ -4601,17 +4672,18 @@ private:
                                                cpp_type(value.type));
             }
             if (returns) *returns = true;
-            const auto returned = value.type == Type::empty_list ||
-                                          value.type == Type::empty_dictionary
-                                      ? "{}"
-                : converted_value(*active_return_type_, value.type, value.cpp);
-            return "return " + returned + ";";
+            auto returned = value.type == Type::empty_list ||
+                                    value.type == Type::empty_dictionary
+                                ? value.ast
+                                : converted_expression(*active_return_type_, value.type,
+                                                       value.ast);
+            return Statement{ReturnStatement{std::move(returned)}, line.number};
         }
         if (!value_text.empty()) {
             throw ParseError(line.number, "void function cannot return a value");
         }
         if (returns) *returns = true;
-        return "return;";
+        return Statement{ReturnStatement{std::nullopt}, line.number};
     }
 
     Statement parse_raise(const SourceLine& line, Symbols& symbols, bool math_imported,
@@ -4636,18 +4708,12 @@ private:
         const auto arguments = split_arguments(arguments_text, line.number);
         if (arguments.empty()) throw ParseError(line.number, "expected print(expression)");
         const auto first = expression(arguments.front(), line.number, symbols, math_imported);
-        if (first.type == Type::region) {
-            throw ParseError(line.number, "memory regions cannot be printed directly");
-        }
         if (first.type == Type::pointer) {
             throw ParseError(line.number, "pointers cannot be printed directly");
         }
-        if (first.type == Type::bytes) {
-            throw ParseError(line.number, "bytes cannot be printed directly; convert with bytes.to_string() or bytes.to_list()");
-        }
         if (first.type.kind == Type::Kind::custom &&
-            !custom_types_.at(first.type.name).is_enum) {
-            throw ParseError(line.number, "class and struct values cannot be printed directly");
+            custom_types_.at(first.type.name).is_error) {
+            throw ParseError(line.number, "error values cannot be printed directly");
         }
         if (first.type == Type::empty_list || first.type == Type::empty_dictionary) {
             throw ParseError(line.number, "an empty collection needs a declared type before printing");
@@ -4666,19 +4732,12 @@ private:
                 }
                 values.push_back(expression(trim(arguments[i].substr(equals + 1)),
                                             line.number, symbols, math_imported));
-                if (values.back().type == Type::region) {
-                    throw ParseError(line.number, "memory regions cannot be formatted as text");
-                }
                 if (values.back().type == Type::pointer) {
                     throw ParseError(line.number, "pointers cannot be formatted as text");
                 }
-                if (values.back().type == Type::bytes) {
-                    throw ParseError(line.number, "bytes cannot be formatted directly; convert with bytes.to_string()");
-                }
                 if (values.back().type.kind == Type::Kind::custom &&
-                    !custom_types_.at(values.back().type.name).is_enum) {
-                    throw ParseError(line.number,
-                                     "class and struct values cannot be formatted directly");
+                    custom_types_.at(values.back().type.name).is_error) {
+                    throw ParseError(line.number, "error values cannot be formatted directly");
                 }
             }
             std::vector<Expression> format_parts;
@@ -4775,7 +4834,7 @@ private:
         return {condition.ast};
     }
 
-    std::string parse_memory_statement(const SourceLine& line, const std::string& text,
+    Statement parse_memory_statement(const SourceLine& line, const std::string& text,
                                       const Symbols& symbols, bool math_imported) const {
         if (!memory_imported_) {
             throw ParseError(line.number, "memory functions require 'import memory'");
@@ -4791,19 +4850,19 @@ private:
             if (pointer.type != Type::pointer) {
                 throw ParseError(line.number, "memory.free_ptr expects one ptr argument");
             }
-            return "(" + pointer.cpp + ").release();";
+            return Statement{MemberCallStatement{pointer.ast, "release", {}}, line.number};
         }
         if (call.first == "write_u16" || call.first == "write_u32") {
-            const auto arguments = split_arguments(call.second, line.number);
-            if (arguments.size() != 4) {
+            const auto argument_strings = split_arguments(call.second, line.number);
+            if (argument_strings.size() != 4) {
                 throw ParseError(
                     line.number, "memory." + call.first +
                                      " expects (region, offset, value, endian)");
             }
-            const auto region = expression(arguments[0], line.number, symbols, math_imported);
-            const auto offset = expression(arguments[1], line.number, symbols, math_imported);
-            const auto value = expression(arguments[2], line.number, symbols, math_imported);
-            const auto endian = expression(arguments[3], line.number, symbols, math_imported);
+            const auto region = expression(argument_strings[0], line.number, symbols, math_imported);
+            const auto offset = expression(argument_strings[1], line.number, symbols, math_imported);
+            const auto value = expression(argument_strings[2], line.number, symbols, math_imported);
+            const auto endian = expression(argument_strings[3], line.number, symbols, math_imported);
             if (region.type != Type::region ||
                 (offset.type != Type::number && offset.type != Type::integer) ||
                 (value.type != Type::number && value.type != Type::integer) ||
@@ -4812,14 +4871,15 @@ private:
                     line.number, "memory." + call.first +
                                      " expects (region, number or int offset, number or int value, string endian)");
             }
-            const auto numeric = [](const ExprValue& value) {
-                return value.type == Type::integer
-                           ? "static_cast<double>(" + value.cpp + ")"
-                           : value.cpp;
-            };
-            return "(" + region.cpp + ")." + call.first + "(" +
-                   numeric(offset) + ", " + numeric(value) + ", " +
-                   endian.cpp + ");";
+            std::vector<Expression> call_arguments;
+            call_arguments.push_back(converted_expression(
+                Type::number, offset.type, offset.ast));
+            call_arguments.push_back(converted_expression(
+                Type::number, value.type, value.ast));
+            call_arguments.push_back(endian.ast);
+            return Statement{MemberCallStatement{region.ast, call.first,
+                                                 std::move(call_arguments)},
+                             line.number};
         }
         if (call.first == "fill") {
             const auto arguments = split_arguments(call.second, line.number);
@@ -4833,30 +4893,26 @@ private:
                 throw ParseError(line.number,
                                  "memory.fill expects a region and number or int byte value");
             }
-            const auto numeric = value.type == Type::integer
-                                     ? "static_cast<double>(" + value.cpp + ")"
-                                     : value.cpp;
-            return "(" + region.cpp + ").fill(" + numeric + ");";
+            return Statement{MemberCallStatement{
+                                 region.ast, "fill",
+                                 {converted_expression(Type::number, value.type,
+                                                        value.ast)}},
+                             line.number};
         }
         if (call.first == "copy") {
-            const auto arguments = split_arguments(call.second, line.number);
-            if (arguments.size() != 5) {
+            const auto argument_strings = split_arguments(call.second, line.number);
+            if (argument_strings.size() != 5) {
                 throw ParseError(line.number,
                                  "memory.copy expects (destination, destination_offset, source, source_offset, length)");
             }
             const auto destination =
-                expression(arguments[0], line.number, symbols, math_imported);
+                expression(argument_strings[0], line.number, symbols, math_imported);
             const auto destination_offset =
-                expression(arguments[1], line.number, symbols, math_imported);
-            const auto source = expression(arguments[2], line.number, symbols, math_imported);
+                expression(argument_strings[1], line.number, symbols, math_imported);
+            const auto source = expression(argument_strings[2], line.number, symbols, math_imported);
             const auto source_offset =
-                expression(arguments[3], line.number, symbols, math_imported);
-            const auto length = expression(arguments[4], line.number, symbols, math_imported);
-            const auto numeric = [](const ExprValue& value) {
-                return value.type == Type::integer
-                           ? "static_cast<double>(" + value.cpp + ")"
-                           : value.cpp;
-            };
+                expression(argument_strings[3], line.number, symbols, math_imported);
+            const auto length = expression(argument_strings[4], line.number, symbols, math_imported);
             if (destination.type != Type::region || source.type != Type::region ||
                 (destination_offset.type != Type::number &&
                  destination_offset.type != Type::integer) ||
@@ -4867,9 +4923,17 @@ private:
                     line.number,
                     "memory.copy expects destination and source regions with number or int offsets and length");
             }
-            return "(" + destination.cpp + ").copy_from(" +
-                   numeric(destination_offset) + ", " + source.cpp + ", " +
-                   numeric(source_offset) + ", " + numeric(length) + ");";
+            std::vector<Expression> call_arguments;
+            call_arguments.push_back(converted_expression(
+                Type::number, destination_offset.type, destination_offset.ast));
+            call_arguments.push_back(source.ast);
+            call_arguments.push_back(converted_expression(
+                Type::number, source_offset.type, source_offset.ast));
+            call_arguments.push_back(converted_expression(
+                Type::number, length.type, length.ast));
+            return Statement{MemberCallStatement{
+                                 destination.ast, "copy_from", std::move(call_arguments)},
+                             line.number};
         }
         if (call.first != "write_u8") {
             throw ParseError(
@@ -4889,16 +4953,16 @@ private:
             throw ParseError(line.number,
                              "memory.write_u8 expects (region, number or int offset, number or int value)");
         }
-        const auto numeric = [](const ExprValue& value) {
-            return value.type == Type::integer
-                       ? "static_cast<double>(" + value.cpp + ")"
-                       : value.cpp;
-        };
-        return "(" + region.cpp + ").write_u8(" + numeric(offset) + ", " +
-               numeric(value) + ");";
+        return Statement{MemberCallStatement{
+                             region.ast, "write_u8",
+                             {converted_expression(Type::number, offset.type,
+                                                    offset.ast),
+                              converted_expression(Type::number, value.type,
+                                                    value.ast)}},
+                         line.number};
     }
 
-    std::string parse_io_statement(const SourceLine& line, const std::string& text,
+    Statement parse_io_statement(const SourceLine& line, const std::string& text,
                                    const Symbols& symbols, bool math_imported) const {
         if (!io_imported_) {
             throw ParseError(line.number, "io functions require 'import io'");
@@ -4920,7 +4984,7 @@ private:
             if (handle.type != Type::integer) {
                 throw ParseError(line.number, "io.close expects one file handle");
             }
-            return "sun_io_close(" + handle.cpp + ");";
+            return Statement{CallStatement{"sun_io_close", {handle.ast}}, line.number};
         }
         if (call.first == "write") {
             if (arguments.size() != 2) {
@@ -4931,7 +4995,8 @@ private:
             if (handle.type != Type::integer || contents.type != Type::string) {
                 throw ParseError(line.number, "io.write expects a file handle and string contents");
             }
-            return "sun_io_write(" + handle.cpp + ", " + contents.cpp + ");";
+            return Statement{
+                CallStatement{"sun_io_write", {handle.ast, contents.ast}}, line.number};
         }
         if (call.first == "pw") {
             if (arguments.size() != 3) {
@@ -4945,11 +5010,14 @@ private:
                 contents.type != Type::string) {
                 throw ParseError(line.number, "io.pw expects a file handle, int line number, and string");
             }
-            const auto index = line_number.type == Type::integer
-                                   ? line_number.cpp
-                                   : "sun_to_int(" + line_number.cpp + ")";
-            return "sun_io_write_line(" + handle.cpp + ", " + index + ", " +
-                   contents.cpp + ");";
+            auto index = line_number.type == Type::integer
+                             ? line_number.ast
+                             : make_expression(Expression::Kind::call, Type::integer,
+                                               "sun_to_int", {line_number.ast});
+            return Statement{CallStatement{
+                                 "sun_io_write_line",
+                                 {handle.ast, std::move(index), contents.ast}},
+                             line.number};
         }
         if (call.first == "write_bytes") {
             if (arguments.size() != 2) {
@@ -4961,7 +5029,9 @@ private:
             if (path.type != Type::string || contents.type != Type::bytes) {
                 throw ParseError(line.number, "io.write_bytes expects a string path and bytes");
             }
-            return "sun_io_write_bytes(" + path.cpp + ", " + contents.cpp + ");";
+            return Statement{CallStatement{
+                                 "sun_io_write_bytes", {path.ast, contents.ast}},
+                             line.number};
         }
         if (arguments.size() != 2) {
             throw ParseError(line.number, "io." + call.first + " expects (path, contents)");
@@ -4971,10 +5041,12 @@ private:
         if (path.type != Type::string || contents.type != Type::string) {
             throw ParseError(line.number, "io." + call.first + " expects string path and contents");
         }
-        return "sun_io_" + call.first + "(" + path.cpp + ", " + contents.cpp + ");";
+        return Statement{
+            CallStatement{"sun_io_" + call.first, {path.ast, contents.ast}},
+            line.number};
     }
 
-    std::string parse_list_append(const SourceLine& line, const std::string& text,
+    Statement parse_list_append(const SourceLine& line, const std::string& text,
                                   const Symbols& symbols, bool math_imported) const {
         const auto method = text.find(".append(");
         const auto list_name = trim(text.substr(0, method));
@@ -5000,11 +5072,17 @@ private:
             throw ParseError(line.number, "list.append item must have type " +
                                            cpp_type(item_type));
         }
-        const auto item = converted_value(item_type, value.type, value.cpp);
-        return "sun_list_append(" + list->second.cpp_name + ", " + item + ");";
+        const auto item = converted_expression(item_type, value.type, value.ast);
+        return Statement{
+            CallStatement{"sun_list_append",
+                          {make_expression(Expression::Kind::variable,
+                                           list->second.type,
+                                           list->second.cpp_name),
+                           std::move(item)}},
+            line.number};
     }
 
-    std::string parse_super_initializer(const SourceLine& line, const std::string& text,
+    Statement parse_super_initializer(const SourceLine& line, const std::string& text,
                                         const Symbols& symbols, bool math_imported) const {
         if (active_class_type_.empty() || active_method_name_ != "init") {
             throw ParseError(line.number, "super.init(...) is only valid inside a class init method");
@@ -5030,16 +5108,17 @@ private:
         }
         const auto supplied = parse_call_arguments(
             split_arguments(call.second, line.number), line.number, symbols, math_imported);
-        const auto arguments = bind_call_arguments("super.init", signature->second,
-                                                   supplied, line.number);
-        std::ostringstream code;
-        code << "SunType_" << initializer_owner << "::init(";
-        for (std::size_t i = 0; i < arguments.size(); ++i) {
-            if (i) code << ", ";
-            code << arguments[i].cpp;
+        const auto bound_arguments = bind_call_arguments("super.init", signature->second,
+                                                         supplied, line.number);
+        std::vector<Expression> call_arguments;
+        call_arguments.reserve(bound_arguments.size());
+        for (const auto& argument : bound_arguments) {
+            call_arguments.push_back(argument.ast);
         }
-        code << ");";
-        return code.str();
+        return Statement{
+            CallStatement{"SunType_" + initializer_owner + "::init",
+                          std::move(call_arguments)},
+            line.number};
     }
 
     Statement parse_index_assignment(const SourceLine& line, const std::string& text,
@@ -5117,11 +5196,17 @@ private:
                     throw ParseError(line.number, "cannot modify a const JSON value");
                 }
             }
-            const auto key_cpp = key.type == Type::number
-                                     ? "sun_to_int(" + key.cpp + ")"
-                                     : key.cpp;
-            return "sun_json_set(" + object.cpp + ", " + key_cpp +
-                   ", sun_json_from(" + value.cpp + "));";
+            auto key_expression = key.type == Type::number
+                                      ? make_expression(Expression::Kind::call,
+                                                        Type::integer, "sun_to_int",
+                                                        {key.ast})
+                                      : key.ast;
+            return Statement{
+                IndexedAssignmentStatement{
+                    IndexedAssignmentStatement::Kind::json,
+                    object.ast, std::move(key_expression),
+                    value.ast},
+                line.number};
         }
         if (bytes_index) {
             const auto target_text = trim(text.substr(0, equals));
@@ -5149,13 +5234,13 @@ private:
             if (value.type != Type::integer && value.type != Type::number) {
                 throw ParseError(line.number, "bytes assignment requires an int or number byte value");
             }
-            const auto to_number = [](const ExprValue& expression) {
-                return expression.type == Type::integer
-                           ? "static_cast<double>(" + expression.cpp + ")"
-                           : expression.cpp;
-            };
-            return "sun_bytes_set(" + object.cpp + ", " + to_number(index) +
-                   ", " + to_number(value) + ");";
+            return Statement{
+                IndexedAssignmentStatement{
+                    IndexedAssignmentStatement::Kind::bytes,
+                    object.ast,
+                    converted_expression(Type::number, index.type, index.ast),
+                    converted_expression(Type::number, value.type, value.ast)},
+                line.number};
         }
         if (left.cpp.rfind("sun_list_at(", 0) != 0 && !dictionary_index) {
             throw ParseError(line.number, "indexed assignment requires list[index], dictionary[key], JSON[index], or bytes[index]");
@@ -5168,16 +5253,21 @@ private:
         }
         if (dictionary_index) {
             return Statement{
-                DictionaryAssignmentStatement{
+                IndexedAssignmentStatement{
+                    IndexedAssignmentStatement::Kind::dictionary,
                     left.ast.children.at(0), left.ast.children.at(1),
                     converted_expression(left.type, value.type, value.ast)},
                 line.number};
         }
-        return left.cpp + " = " +
-               converted_value(left.type, value.type, value.cpp) + ";";
+        return Statement{
+            IndexedAssignmentStatement{
+                IndexedAssignmentStatement::Kind::list, left.ast,
+                make_expression(Expression::Kind::literal, Type::integer, "0"),
+                converted_expression(left.type, value.type, value.ast)},
+            line.number};
     }
 
-    std::string parse_member_assignment(const SourceLine& line, const std::string& text,
+    Statement parse_member_assignment(const SourceLine& line, const std::string& text,
                                         const Symbols& symbols, bool math_imported) const {
         const auto equals = find_assignment_operator(text);
         const auto left = expression(trim(text.substr(0, equals)), line.number,
@@ -5191,10 +5281,14 @@ private:
             throw ParseError(line.number, "cannot assign " + cpp_type(value.type) +
                                            " to field of type " + cpp_type(left.type));
         }
-        return left.cpp + " = " + converted_value(left.type, value.type, value.cpp) + ";";
+        return Statement{
+            MemberAssignmentStatement{
+                left.ast,
+                converted_expression(left.type, value.type, value.ast)},
+            line.number};
     }
 
-    std::string parse_method_statement(const SourceLine& line, const std::string& text,
+    Statement parse_method_statement(const SourceLine& line, const std::string& text,
                                       const Symbols& symbols, bool math_imported) const {
         const auto dot = text.find('.');
         const auto open = text.find('(', dot == std::string::npos ? 0 : dot);
@@ -5207,11 +5301,52 @@ private:
         if (!is_identifier(method)) {
             throw ParseError(line.number, "invalid collection operation");
         }
-        const auto numeric_value = [](const ExprValue& value) {
-            return value.type == Type::integer
-                       ? "static_cast<double>(" + value.cpp + ")"
-                       : value.cpp;
-        };
+        if (object.type.kind == Type::Kind::json) {
+            const auto call = parse_call(method + text.substr(open), line.number);
+            const auto arguments = split_arguments(call.second, line.number);
+            if (method != "append" || arguments.size() != 1) {
+                throw ParseError(line.number,
+                                 "json statements support append(value) only");
+            }
+            const auto& item = expression(arguments.front(), line.number, symbols,
+                                           math_imported);
+            const bool serializable = item.type == Type::string ||
+                                      item.type == Type::character ||
+                                      item.type == Type::number ||
+                                      item.type == Type::integer ||
+                                      item.type == Type::boolean ||
+                                      item.type.kind == Type::Kind::json ||
+                                      is_list_type(item.type) ||
+                                      (is_dictionary_type(item.type) &&
+                                       dictionary_types(item.type).first ==
+                                           Type::string);
+            if (!serializable) {
+                throw ParseError(line.number,
+                                 "json.append requires a JSON value, scalar, list, or dict[string, value]");
+            }
+            const Expression* root = &object.ast;
+            while (root->kind == Expression::Kind::call &&
+                   root->value == "sun_json_at_ref") {
+                root = &root->children.front();
+            }
+            if (root->kind != Expression::Kind::variable) {
+                throw ParseError(line.number,
+                                 "json.append requires a mutable JSON variable or indexed value");
+            }
+            for (const auto& entry : symbols) {
+                if (entry.second.cpp_name == root->value &&
+                    entry.second.is_const) {
+                    throw ParseError(line.number, "cannot modify a const JSON value");
+                }
+            }
+            return Statement{
+                CallStatement{
+                    "sun_json_append",
+                    {object.ast,
+                     make_expression(Expression::Kind::call, item.type,
+                                      "sun_json_from", {item.ast})}},
+                line.number};
+        }
         if (is_dictionary_type(object.type)) {
             const auto call = parse_call(method + text.substr(open), line.number);
             const auto arguments = split_arguments(call.second, line.number);
@@ -5219,7 +5354,8 @@ private:
                 if (!arguments.empty()) {
                     throw ParseError(line.number, "dictionary.clear expects no arguments");
                 }
-                return "(" + object.cpp + ").clear();";
+                return Statement{
+                    MemberCallStatement{object.ast, "clear", {}}, line.number};
             }
             if (method != "remove") {
                 throw ParseError(line.number, "dictionary." + method +
@@ -5234,7 +5370,9 @@ private:
                 throw ParseError(line.number, "dictionary key must have type " +
                                                  cpp_type(key_type));
             }
-            return "sun_dict_remove(" + object.cpp + ", " + key.cpp + ");";
+            return Statement{
+                CallStatement{"sun_dict_remove", {object.ast, key.ast}},
+                line.number};
         }
         if (object.type == Type::bytes) {
             const auto call = parse_call(method + text.substr(open), line.number);
@@ -5243,7 +5381,8 @@ private:
                 if (!arguments.empty()) {
                     throw ParseError(line.number, "bytes.clear expects no arguments");
                 }
-                return "(" + object.cpp + ").clear();";
+                return Statement{
+                    MemberCallStatement{object.ast, "clear", {}}, line.number};
             }
             if (method == "append") {
                 if (arguments.size() != 1) {
@@ -5254,8 +5393,12 @@ private:
                 if (value.type != Type::integer && value.type != Type::number) {
                     throw ParseError(line.number, "bytes.append expects an int or number byte value");
                 }
-                return "sun_bytes_append(" + object.cpp + ", " +
-                       numeric_value(value) + ");";
+                return Statement{
+                    CallStatement{
+                        "sun_bytes_append",
+                        {object.ast,
+                         converted_expression(Type::number, value.type, value.ast)}},
+                    line.number};
             }
             throw ParseError(line.number, "unknown bytes statement operation '" +
                                              method + "'");
@@ -5268,7 +5411,8 @@ private:
                 if (!arguments.empty()) {
                     throw ParseError(line.number, "list.clear expects no arguments");
                 }
-                return "(" + object.cpp + ").clear();";
+                return Statement{
+                    MemberCallStatement{object.ast, "clear", {}}, line.number};
             }
             if (method == "insert") {
                 if (arguments.size() != 2) {
@@ -5283,8 +5427,13 @@ private:
                     throw ParseError(line.number, "list item must have type " +
                                                      cpp_type(item_type));
                 }
-                return "sun_list_insert(" + object.cpp + ", " + numeric_value(index) + ", " +
-                       converted_value(item_type, item.type, item.cpp) + ");";
+                return Statement{
+                    CallStatement{
+                        "sun_list_insert",
+                        {object.ast,
+                         converted_expression(Type::number, index.type, index.ast),
+                         converted_expression(item_type, item.type, item.ast)}},
+                    line.number};
             }
             if (method == "remove") {
                 if (arguments.size() != 1) {
@@ -5296,8 +5445,12 @@ private:
                     throw ParseError(line.number, "list item must have type " +
                                                      cpp_type(item_type));
                 }
-                return "sun_list_remove(" + object.cpp + ", " +
-                       converted_value(item_type, item.type, item.cpp) + ");";
+                return Statement{
+                    CallStatement{
+                        "sun_list_remove",
+                        {object.ast,
+                         converted_expression(item_type, item.type, item.ast)}},
+                    line.number};
             }
             if (method == "pop") {
                 if (arguments.size() != 1) {
@@ -5308,7 +5461,12 @@ private:
                 if (index.type != Type::integer && index.type != Type::number) {
                     throw ParseError(line.number, "list.pop index must have type int or number");
                 }
-                return "sun_list_pop(" + object.cpp + ", " + numeric_value(index) + ");";
+                return Statement{
+                    CallStatement{
+                        "sun_list_pop",
+                        {object.ast,
+                         converted_expression(Type::number, index.type, index.ast)}},
+                    line.number};
             }
             throw ParseError(line.number, "list." + method +
                                              " returns a value or is not supported as a statement");
@@ -5330,18 +5488,18 @@ private:
             split_arguments(call.second, line.number), line.number, symbols, math_imported);
         const auto arguments = bind_call_arguments(method, signature->second,
                                                   supplied, line.number);
-        std::ostringstream code;
-        code << "(" << object.cpp << ")." << method << '(';
-        for (std::size_t i = 0; i < arguments.size(); ++i) {
-            if (i) code << ", ";
-            code << arguments[i].cpp;
+        std::vector<Expression> call_arguments;
+        call_arguments.reserve(arguments.size());
+        for (const auto& argument : arguments) {
+            call_arguments.push_back(argument.ast);
         }
-        code << ");";
-        return code.str();
+        return Statement{
+            MemberCallStatement{object.ast, method, std::move(call_arguments)},
+            line.number};
     }
 
-    std::string parse_user_call(const SourceLine& line, const std::string& text,
-                                const Symbols& symbols, bool math_imported) const {
+    Statement parse_user_call(const SourceLine& line, const std::string& text,
+                              const Symbols& symbols, bool math_imported) const {
         const auto call = parse_call(text, line.number);
         const auto signature = signatures_.find(call.first);
         if (signature == signatures_.end()) {
@@ -5353,17 +5511,13 @@ private:
             split_arguments(call.second, line.number), line.number, symbols, math_imported);
         const auto values = bind_call_arguments(call.first, signature->second,
                                                 supplied, line.number);
-        std::ostringstream code;
-        code << (signature->second.cpp_name.empty()
-                     ? "sun_fn_" + call.first
-                     : signature->second.cpp_name)
-             << '(';
-        for (std::size_t i = 0; i < values.size(); ++i) {
-            if (i) code << ", ";
-            code << values[i].cpp;
-        }
-        code << ");";
-        return code.str();
+        std::vector<Expression> arguments;
+        arguments.reserve(values.size());
+        for (const auto& value : values) arguments.push_back(value.ast);
+        const auto cpp_name = signature->second.cpp_name.empty()
+                                  ? "sun_fn_" + call.first
+                                  : signature->second.cpp_name;
+        return Statement{CallStatement{cpp_name, std::move(arguments)}, line.number};
     }
 
     bool is_assignment(const std::string& text) const {
@@ -5445,7 +5599,11 @@ private:
                                                "' is only valid inside a loop");
             }
             ++index;
-            return text + ";";
+            return Statement{
+                LoopControlStatement{
+                    text == "break" ? LoopControlStatement::Kind::break_
+                                    : LoopControlStatement::Kind::continue_},
+                line.number};
         }
         if (text.rfind("memory.", 0) == 0) {
             auto result = parse_memory_statement(line, text, symbols, math_imported);
@@ -5514,13 +5672,20 @@ private:
             return Statement{std::move(result), line.number};
         }
         const auto method_dot = text.find('.');
-        const auto method_object = method_dot == std::string::npos
-            ? symbols.end() : symbols.find(trim(text.substr(0, method_dot)));
+        auto method_object_name = method_dot == std::string::npos
+                                      ? std::string{}
+                                      : trim(text.substr(0, method_dot));
+        const auto indexed_prefix = method_object_name.find('[');
+        if (indexed_prefix != std::string::npos) {
+            method_object_name = trim(method_object_name.substr(0, indexed_prefix));
+        }
+        const auto method_object = symbols.find(method_object_name);
         if (method_object != symbols.end() &&
             (method_object->second.type.kind == Type::Kind::custom ||
              is_dictionary_type(method_object->second.type) ||
              is_list_type(method_object->second.type) ||
-             method_object->second.type == Type::bytes) &&
+             method_object->second.type == Type::bytes ||
+             method_object->second.type.kind == Type::Kind::json) &&
             text.find('(', method_dot) != std::string::npos) {
             auto result = parse_method_statement(line, text, symbols, math_imported);
             ++index;

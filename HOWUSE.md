@@ -2,6 +2,9 @@
 
 Este guia mostra como compilar o compilador, transpilar um arquivo `.su`,
 gerar um executavel e escrever programas com a sintaxe atualmente suportada.
+A referencia normativa das regras atuais esta em
+[SUN-SPEC.md](SUN-SPEC.md); este arquivo continua sendo o guia pratico, com
+exemplos e instrucoes de uso.
 
 ## 1. Requisitos
 
@@ -26,11 +29,17 @@ build/sun --help
 ```
 
 O core esta dividido em `src/main.cpp` (CLI), `src/lexer.cpp` (tokens),
-`src/parser.cpp` (sintaxe e verificacao de tipos), `src/codegen.cpp` (geracao
-de C++) e `src/compiler.hpp` (tipos e interface entre os modulos).
-`print`, suas expressoes e as instrucoes de controle sao mantidos como nos
-estruturados entre parser e gerador. Nas demais instrucoes, a conversao das
-expressoes ainda ocorre durante a analise e pode ser migrada incrementalmente.
+`src/parser.cpp` (sintaxe e verificacao de tipos), `src/compiler.hpp` (AST e
+tipos), `src/expression_codegen.cpp` (expressoes AST para C++) e
+`src/codegen.cpp` (programa AST para C++). Expressoes tipadas sao representadas
+pela AST e essa arvore e a fonte de verdade para sua emissao. A verificacao de
+tipos ainda acontece durante o parsing. Declaracoes, atribuicoes, retornos,
+chamadas, atribuicoes indexadas, chamadas de metodos, condicoes, loops e
+bibliotecas imperativas ja possuem nos estruturados na AST. Apenas blocos
+`inline cpp` sao preservados como texto C++ literal; eles continuam sendo uma
+excecao explicitamente nativa. Essa separacao ja remove a maioria da conversao
+direta de instrucoes para C++ durante o parsing, mas ainda nao divide o pipeline
+em passes completos e independentes de lexing, analise semantica e codegen.
 
 Para verificar sintaxe e tipos sem gravar C++ nem executar o compilador C++:
 
@@ -142,8 +151,9 @@ report(int(3), int(5), label="total", mode="brief")
 
 ## 5. Strings e interpolacao
 
-Strings usam aspas duplas. Os escapes aceitos sao `\\`, `\"`, `\n`, `\t` e
-`\r`. O operador `+` concatena texto:
+Strings usam aspas duplas. Os escapes aceitos sao `\\`, `\"`, `\n`, `\t`, `\r`
+e `\0`; bytes NUL literais no arquivo fonte nao sao aceitos. O operador `+`
+concatena texto:
 
 ```sun
 def mostrar(nome)
@@ -153,8 +163,9 @@ end
 
 Strings oferecem `upper()`, `lower()` e `trim()`; `split(separador)` retorna
 `list[string]`; `replace(busca, substituicao)` retorna uma nova string;
-`contains(texto)`, `starts_with(prefixo)` e `ends_with(sufixo)` retornam `bool`.
-`split` e `replace` rejeitam o texto de busca vazio com um erro de runtime.
+`contains(texto)`, `starts_with(prefixo)` e `ends_with(sufixo)` retornam `bool`;
+`count(texto)` retorna a quantidade de ocorrencias nao sobrepostas.
+`split`, `replace` e `count` rejeitam o texto de busca vazio com erro de runtime.
 As transformacoes de maiusculas/minusculas e `trim()` operam por byte usando o
 locale C ativo; as demais operacoes preservam os bytes UTF-8 sem normalizacao.
 
@@ -198,9 +209,10 @@ end
 
 As expressoes interpoladas usam as regras normais de tipos e podem conter
 operacoes, chamadas de funcao e acesso a itens. O resultado e convertido para
-texto. Regioes de memoria e valores de classes/structs nao podem ser
-interpolados diretamente. As chaves duplas `{{` e `}}` representam chaves
-literais.
+texto. `bytes` e exibido como uma lista de octetos; regioes mostram seu tamanho;
+structs e classes mostram o tipo e seus campos (incluindo os herdados). Valores
+`ptr` e erros personalizados nao podem ser interpolados diretamente. As chaves
+duplas `{{` e `}}` representam chaves literais.
 
 ### Marcador `%v`
 
@@ -278,7 +290,9 @@ duas strings. `int` e um inteiro assinado de 64 bits: sua divisao trunca em
 direcao a zero e overflow ou divisao por zero geram erro em runtime.
 `int(numero)` converte apenas valores inteiros dentro do intervalo de `int`;
 `number(inteiro)` converte explicitamente para `number`, e `int` pode ser
-promovido a `number` em expressoes. `char` representa um unico code point
+promovido a `number` em expressoes. `number` usa `double` do C++ e tem precisao
+finita; valores inteiros grandes podem perder exatidao quando convertidos.
+`char` representa um unico code point
 Unicode; `char("A")` e `char("é")` sao conversoes validas, enquanto strings
 vazias ou com mais de um caractere sao rejeitadas.
 
@@ -829,12 +843,21 @@ print(json.dumps(data))
 ```
 
 O acesso a objetos usa chaves `string`; arrays usam indices `int` ou `number`.
+`.contains(chave)` verifica se um objeto tem uma chave sem lancar erro quando
+ela falta. `.append(valor)` acrescenta um valor JSON-compativel ao final de um
+array e retorna o novo tamanho; o valor pode ser um escalar, JSON, lista tipada
+ou dicionario com chaves `string`. Ambos falham em runtime se usados no tipo de
+container errado. Esses metodos exigem um valor JSON mutavel.
 Conversoes de tipo verificadas incluem `.as_string()`, `.as_number()`,
 `.as_int()` e `.as_bool()`; `.is_null()` testa `null`, e `.size()` retorna o
 tamanho de objetos, arrays ou strings. `json.dumps` tambem serializa valores
 escalares, listas tipadas e dicionarios com chaves `string`.
 JSON malformado, indices fora dos limites ou conversoes incompatíveis geram
 erros de runtime Sun. A implementacao fica em `src/stdlib_json.cpp`.
+Inteiros JSON fora do intervalo de `int` permanecem preservados na
+serializacao; `.as_int()` os rejeita, enquanto `.as_number()` os converte para
+`number` com a precisao limitada de `double`. `json.dumps` nao aceita `NaN` ou
+infinito.
 
 ## 9. Biblioteca `memory`
 
@@ -891,8 +914,9 @@ privilegios e riscos normais de acesso a ponteiros nativos.
 
 Uma regiao atribuida a outra variavel ou passada para uma funcao referencia a
 mesma alocacao. A memoria e liberada automaticamente quando nao houver mais
-regioes referenciando-a. O tipo `region` nao pode ser impresso, formatado ou
-comparado diretamente.
+regioes referenciando-a. O tipo `region` nao pode ser comparado diretamente.
+Sua representacao em texto e `region(size=N)`; ela mostra o tamanho atual,
+inclusive `region(size=0)` para regioes vazias.
 
 ## 10. Tipo `bytes`
 
@@ -920,7 +944,8 @@ end
 UTF-8; `bytes.from_list`/`bytes.to_list` convertem entre `bytes` e `list[int]`.
 `bytes.from_region`/`bytes.to_region` copiam dados e requerem `import memory`.
 `append`, `clear`, indexacao, `len`, `contains` e iteracao estao disponiveis.
-Impressao direta de `bytes` nao e suportada; converta para string ou lista.
+Impressao direta mostra a sequencia como uma lista de octetos, por exemplo
+`[65, 66]`; use `bytes.to_string()` para recuperar o texto original.
 
 ## 11. C++ inline
 
@@ -1110,3 +1135,7 @@ Com Python 3 instalado:
 ```sh
 make test
 ```
+
+`make test` distribui os casos entre ate quatro processos, cada um com uma
+pasta temporaria isolada. Ajuste o paralelismo quando necessario, por exemplo
+`make test TEST_JOBS=2`; use `make test-serial` para executar a suite sequencial.

@@ -1,4 +1,5 @@
 #include "compiler.hpp"
+#include "expression_codegen.hpp"
 #include "stdlib_io.hpp"
 #include "stdlib_json.hpp"
 
@@ -33,79 +34,6 @@ std::string cpp_string(const std::string& value) {
     return result.str();
 }
 
-std::string emit_expression(const Expression& expression) {
-    const auto child = [&](std::size_t index) {
-        return emit_expression(expression.children.at(index));
-    };
-    const auto arguments = [&](std::size_t start) {
-        std::ostringstream result;
-        for (std::size_t i = start; i < expression.children.size(); ++i) {
-            if (i != start) result << ", ";
-            result << emit_expression(expression.children[i]);
-        }
-        return result.str();
-    };
-    switch (expression.kind) {
-    case Expression::Kind::literal:
-        if (expression.type == Type::integer) {
-            const auto min = std::numeric_limits<std::int64_t>::min();
-            if (expression.value == std::to_string(min)) {
-                return "std::numeric_limits<std::int64_t>::min()";
-            }
-            return "std::int64_t{" + expression.value + "}";
-        }
-        return expression.value;
-    case Expression::Kind::string_literal:
-        return "std::string(" + cpp_string(expression.value) + ")";
-    case Expression::Kind::variable: return expression.value;
-    case Expression::Kind::unary:
-        if (expression.value == "sun_int_neg") {
-            return "sun_int_neg(" + child(0) + ")";
-        }
-        return "(" + expression.value + "(" + child(0) + "))";
-    case Expression::Kind::binary:
-        return "((" + child(0) + ") " + expression.value + " (" + child(1) + "))";
-    case Expression::Kind::call:
-        return expression.value + "(" + arguments(0) + ")";
-    case Expression::Kind::member:
-        return "(" + child(0) + ")." + expression.value;
-    case Expression::Kind::member_call:
-        return "(" + child(0) + ")." + expression.value + "(" + arguments(1) + ")";
-    case Expression::Kind::list:
-    case Expression::Kind::aggregate: {
-        std::ostringstream result;
-        if (expression.kind == Expression::Kind::list) {
-            result << "std::vector<" << expression.value << ">{";
-        } else {
-            result << expression.value << '{';
-        }
-        result << arguments(0) << '}';
-        return result.str();
-    }
-    case Expression::Kind::dictionary: {
-        const auto separator = expression.value.find('|');
-        if (separator == std::string::npos) {
-            throw std::logic_error("dictionary expression is missing its type");
-        }
-        std::ostringstream result;
-        result << "std::map<" << expression.value.substr(0, separator) << ", "
-               << expression.value.substr(separator + 1) << ">{";
-        for (std::size_t i = 0; i < expression.children.size(); i += 2) {
-            if (i) result << ", ";
-            result << '{' << emit_expression(expression.children[i]) << ", "
-                   << emit_expression(expression.children[i + 1]) << '}';
-        }
-        result << '}';
-        return result.str();
-    }
-    case Expression::Kind::cast:
-        return "static_cast<" + expression.value + ">(" + child(0) + ")";
-    case Expression::Kind::empty_list: return "{}";
-    case Expression::Kind::empty_dictionary: return "{}";
-    }
-    throw std::logic_error("invalid expression node");
-}
-
 void emit_block(std::ostream& out, const Block& statements, std::size_t spaces);
 
 void emit_raw(std::ostream& out, const std::string& code, std::size_t spaces) {
@@ -122,6 +50,63 @@ void emit_statement(std::ostream& out, const Statement& statement, std::size_t s
     const std::string prefix(spaces, ' ');
     if (const auto* raw = std::get_if<RawStatement>(&statement.node)) {
         emit_raw(out, raw->cpp, spaces);
+    } else if (const auto* declaration =
+                   std::get_if<VariableDeclarationStatement>(&statement.node)) {
+        out << prefix << (declaration->is_const ? "const " : "")
+            << cpp_type(declaration->type) << ' ' << declaration->cpp_name << " = "
+            << emit_expression(declaration->initializer) << ";\n";
+    } else if (const auto* assignment =
+                   std::get_if<AssignmentStatement>(&statement.node)) {
+        out << prefix << assignment->cpp_name << " = "
+            << emit_expression(assignment->value) << ";\n";
+    } else if (const auto* returned = std::get_if<ReturnStatement>(&statement.node)) {
+        out << prefix << "return";
+        if (returned->value) out << ' ' << emit_expression(*returned->value);
+        out << ";\n";
+    } else if (const auto* call = std::get_if<CallStatement>(&statement.node)) {
+        out << prefix << call->callee << '(';
+        for (std::size_t i = 0; i < call->arguments.size(); ++i) {
+            if (i) out << ", ";
+            out << emit_expression(call->arguments[i]);
+        }
+        out << ");\n";
+    } else if (const auto* call =
+                   std::get_if<MemberCallStatement>(&statement.node)) {
+        out << prefix << '(' << emit_expression(call->receiver) << ")."
+            << call->method << '(';
+        for (std::size_t i = 0; i < call->arguments.size(); ++i) {
+            if (i) out << ", ";
+            out << emit_expression(call->arguments[i]);
+        }
+        out << ");\n";
+    } else if (const auto* assignment =
+                   std::get_if<IndexedAssignmentStatement>(&statement.node)) {
+        if (assignment->kind == IndexedAssignmentStatement::Kind::list) {
+            out << prefix << emit_expression(assignment->object) << " = "
+                << emit_expression(assignment->value) << ";\n";
+        } else if (assignment->kind ==
+                   IndexedAssignmentStatement::Kind::dictionary) {
+            out << prefix << emit_expression(assignment->object) << '['
+                << emit_expression(assignment->key) << "] = "
+                << emit_expression(assignment->value) << ";\n";
+        } else if (assignment->kind == IndexedAssignmentStatement::Kind::json) {
+            out << prefix << "sun_json_set(" << emit_expression(assignment->object)
+                << ", " << emit_expression(assignment->key) << ", sun_json_from("
+                << emit_expression(assignment->value) << "));\n";
+        } else {
+            out << prefix << "sun_bytes_set(" << emit_expression(assignment->object)
+                << ", " << emit_expression(assignment->key) << ", "
+                << emit_expression(assignment->value) << ");\n";
+        }
+    } else if (const auto* assignment =
+                   std::get_if<MemberAssignmentStatement>(&statement.node)) {
+        out << prefix << emit_expression(assignment->target) << " = "
+            << emit_expression(assignment->value) << ";\n";
+    } else if (const auto* control =
+                   std::get_if<LoopControlStatement>(&statement.node)) {
+        out << prefix
+            << (control->kind == LoopControlStatement::Kind::break_ ? "break;\n"
+                                                                    : "continue;\n");
     } else if (const auto* print = std::get_if<PrintStatement>(&statement.node)) {
         out << prefix << "std::cout << sun_to_string(" << emit_expression(print->value)
             << ") << '\\n';\n";
@@ -144,7 +129,7 @@ void emit_statement(std::ostream& out, const Statement& statement, std::size_t s
             const auto& branch = conditional->branches[i];
             if (i == 0) out << prefix << "if (";
             else out << "else if (";
-            out << branch.condition << ") {\n";
+            out << emit_expression(branch.condition) << ") {\n";
             emit_block(out, branch.body, spaces + 4);
             out << prefix << '}';
             if (i + 1 < conditional->branches.size() || conditional->else_body) out << ' ';
@@ -211,18 +196,18 @@ void emit_statement(std::ostream& out, const Statement& statement, std::size_t s
         emit_block(out, local_function->body, spaces + 4);
         out << prefix << "};\n";
     } else if (const auto* loop = std::get_if<WhileStatement>(&statement.node)) {
-        out << prefix << "while (" << loop->condition << ") {\n";
+        out << prefix << "while (" << emit_expression(loop->condition) << ") {\n";
         emit_block(out, loop->body, spaces + 4);
         out << prefix << "}\n";
     } else if (const auto* loop = std::get_if<RangeForStatement>(&statement.node)) {
         const auto inner = std::string(spaces + 4, ' ');
         out << prefix << "{\n"
             << inner << "const double " << loop->start_name << " = "
-            << loop->start_value << ";\n"
+            << emit_expression(loop->start_value) << ";\n"
             << inner << "const double " << loop->stop_name << " = "
-            << loop->stop_value << ";\n"
+            << emit_expression(loop->stop_value) << ";\n"
             << inner << "const double " << loop->step_name << " = "
-            << loop->step_value << ";\n"
+            << emit_expression(loop->step_value) << ";\n"
             << inner << "if (" << loop->step_name
             << " == 0.0) throw SunRuntimeError(\"range step cannot be zero\");\n"
             << inner << "for (double " << loop->variable_name << " = "
@@ -236,20 +221,21 @@ void emit_statement(std::ostream& out, const Statement& statement, std::size_t s
     } else if (const auto* loop = std::get_if<ForEachStatement>(&statement.node)) {
         if (loop->dictionary) {
             out << prefix << "for (const auto& " << loop->entry_name << " : "
-                << loop->collection << ") {\n"
+                << emit_expression(loop->collection) << ") {\n"
                 << std::string(spaces + 4, ' ') << "auto " << loop->variable_name
                 << " = " << loop->entry_name << ".first;\n";
         } else {
             out << prefix << "for (auto " << loop->variable_name << " : "
-                << loop->collection << ") {\n";
+                << emit_expression(loop->collection) << ") {\n";
         }
         emit_block(out, loop->body, spaces + 4);
         out << prefix << "}\n";
     } else if (const auto* opened = std::get_if<WithOpenStatement>(&statement.node)) {
         out << prefix << "{\n"
             << std::string(spaces + 4, ' ') << "SunFileGuard "
-            << opened->guard_name << "(sun_io_open(" << opened->path << ", "
-            << opened->mode << "));\n"
+            << opened->guard_name << "(sun_io_open("
+            << emit_expression(opened->path) << ", "
+            << emit_expression(opened->mode) << "));\n"
             << std::string(spaces + 4, ' ') << "const std::int64_t "
             << opened->handle_name << " = " << opened->guard_name
             << ".handle();\n";
@@ -476,6 +462,20 @@ bool sun_string_contains(const std::string& value, const std::string& part) {
     return value.find(part) != std::string::npos;
 }
 
+std::int64_t sun_string_count(const std::string& value, const std::string& part) {
+    if (part.empty()) throw SunRuntimeError("string.count search text cannot be empty");
+    std::int64_t count = 0;
+    for (std::size_t position = 0;
+         (position = value.find(part, position)) != std::string::npos;
+         position += part.size()) {
+        if (count == std::numeric_limits<std::int64_t>::max()) {
+            throw SunRuntimeError("string.count result exceeds int range");
+        }
+        ++count;
+    }
+    return count;
+}
+
 bool sun_string_starts_with(const std::string& value, const std::string& prefix) {
     return value.size() >= prefix.size() &&
            value.compare(0, prefix.size(), prefix) == 0;
@@ -609,10 +609,9 @@ std::string sun_to_char(const std::string& value) {
 }
 
 std::int64_t sun_to_int(double value) {
-    const auto wide = static_cast<long double>(value);
+    const double limit = std::ldexp(1.0, 63);
     if (!std::isfinite(value) || std::floor(value) != value ||
-        wide < static_cast<long double>(std::numeric_limits<std::int64_t>::min()) ||
-        wide > static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
+        value < -limit || value >= limit)
         throw SunRuntimeError("int() requires an in-range whole number");
     return static_cast<std::int64_t>(value);
 }
@@ -1155,6 +1154,16 @@ private:
     out << "\nstd::string sun_to_string(const std::string& value) {\n"
            "    return value;\n"
            "}\n\n"
+           "std::string sun_to_string(const SunBytes& value) {\n"
+           "    std::ostringstream stream;\n"
+           "    stream << '[';\n"
+           "    for (std::size_t i = 0; i < value.size(); ++i) {\n"
+           "        if (i) stream << \", \";\n"
+           "        stream << static_cast<unsigned int>(value[i]);\n"
+           "    }\n"
+           "    stream << ']';\n"
+           "    return stream.str();\n"
+           "}\n\n"
            "template <typename T>\n"
            "std::string sun_to_string(const T& value) {\n"
            "    std::ostringstream stream;\n"
@@ -1207,6 +1216,11 @@ private:
            "    }\n"
            "    return next;\n"
            "}\n\n";
+    if (program.memory_imported) {
+        out << "std::string sun_to_string(const SunMemoryRegion& value) {\n"
+               "    return \"region(size=\" + sun_to_string(value.size()) + \")\";\n"
+               "}\n\n";
+    }
     for (const auto& type : program.custom_types) {
         if (!type.is_enum) continue;
         const bool has_payload = std::any_of(
@@ -1233,6 +1247,22 @@ private:
                 << '"' << value << '"' << ";\n";
         }
         out << "    }\n    return \"<invalid " << type.name << ">\";\n}\n\n";
+    }
+    for (const auto& type : program.custom_types) {
+        if (type.is_enum || type.is_error || type.is_error_base) continue;
+        const auto fields = type.is_class ? all_class_fields(program, type) : type.fields;
+        out << "std::string sun_to_string(const SunType_" << type.name
+            << "& value) {\n"
+            << "    std::ostringstream stream;\n"
+            << "    stream << \"" << type.name << "{\";\n";
+        for (std::size_t i = 0; i < fields.size(); ++i) {
+            if (i) out << "    stream << \", \";\n";
+            out << "    stream << \"" << fields[i].name << "=\" << "
+                << "sun_to_string(value." << fields[i].name << ");\n";
+        }
+        out << "    stream << \"}\";\n"
+            << "    return stream.str();\n"
+            << "}\n\n";
     }
     for (const auto& function : program.functions) {
         if (!function.owner_type.empty()) continue;

@@ -91,6 +91,7 @@ std::vector<Token> tokenize(const std::string& source, std::size_t line) {
                     }
                     current = source[i++];
                     switch (current) {
+                    case '0': value.push_back('\0'); break;
                     case 'n': value.push_back('\n'); break;
                     case 't': value.push_back('\t'); break;
                     case 'r': value.push_back('\r'); break;

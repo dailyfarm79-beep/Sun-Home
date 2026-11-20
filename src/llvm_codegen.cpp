@@ -25,6 +25,10 @@ bool is_string_like(Type type) {
     return type == Type::string || type == Type::character;
 }
 
+bool is_dictionary_type(Type type) {
+    return type.kind == Type::Kind::dictionary;
+}
+
 bool is_list_type(Type type) {
     return type.kind == Type::Kind::list_number ||
            type.kind == Type::Kind::list_integer ||
@@ -51,10 +55,12 @@ std::string llvm_list_suffix(Type type) {
 }
 
 std::string llvm_type(Type type) {
-    if (is_list_type(type) || type.kind == Type::Kind::empty_list) return "ptr";
+    if (is_list_type(type) || type.kind == Type::Kind::empty_list ||
+        is_dictionary_type(type) || type.kind == Type::Kind::empty_dictionary) return "ptr";
     if (type == Type::integer) return "i64";
     if (type == Type::number) return "double";
     if (type == Type::boolean) return "i1";
+    if (type == Type::bytes) return "ptr";
     if (is_string_like(type)) return "ptr";
     throw std::logic_error("LLVM backend does not support type '" +
                            cpp_type(type) + "'");
@@ -129,6 +135,40 @@ public:
                   "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)\n"
                   "declare double @llvm.floor.f64(double)\n"
                   "declare i32 @putchar(i32)\n"
+                  "declare void @sun_llvm_assert(i1)\n"
+                  "declare void @sun_llvm_raise(ptr, i64)\n"
+                  "declare ptr @sun_llvm_bytes_create()\n"
+                  "declare i64 @sun_llvm_bytes_len(ptr)\n"
+                  "declare i64 @sun_llvm_bytes_at(ptr, double)\n"
+                  "declare void @sun_llvm_bytes_set(ptr, double, i64)\n"
+                  "declare void @sun_llvm_bytes_append(ptr, i64)\n"
+                  "declare i1 @sun_llvm_bytes_contains(ptr, i64)\n"
+                  "declare void @sun_llvm_bytes_clear(ptr)\n"
+                  "declare ptr @sun_llvm_bytes_from_string(ptr, i64)\n"
+                  "declare ptr @sun_llvm_bytes_to_string(ptr, ptr)\n"
+                  "declare ptr @sun_llvm_dict_create()\n"
+                  "declare i64 @sun_llvm_dict_len(ptr)\n"
+                  "declare void @sun_llvm_dict_clear(ptr)\n"
+                  "declare i64 @sun_llvm_dict_at_i64_i64(ptr, i64)\n"
+                  "declare double @sun_llvm_dict_at_i64_double(ptr, i64)\n"
+                  "declare i1 @sun_llvm_dict_at_i64_bool(ptr, i64)\n"
+                  "declare ptr @sun_llvm_dict_at_i64_string(ptr, i64, ptr)\n"
+                  "declare i64 @sun_llvm_dict_at_string_i64(ptr, ptr, i64)\n"
+                  "declare double @sun_llvm_dict_at_string_double(ptr, ptr, i64)\n"
+                  "declare i1 @sun_llvm_dict_at_string_bool(ptr, ptr, i64)\n"
+                  "declare ptr @sun_llvm_dict_at_string_string(ptr, ptr, i64, ptr)\n"
+                  "declare i1 @sun_llvm_dict_contains_i64(ptr, i64)\n"
+                  "declare i1 @sun_llvm_dict_contains_string(ptr, ptr, i64)\n"
+                  "declare i1 @sun_llvm_dict_remove_i64(ptr, i64)\n"
+                  "declare i1 @sun_llvm_dict_remove_string(ptr, ptr, i64)\n"
+                  "declare void @sun_llvm_dict_set_i64_i64(ptr, i64, i64)\n"
+                  "declare void @sun_llvm_dict_set_i64_double(ptr, i64, double)\n"
+                  "declare void @sun_llvm_dict_set_i64_bool(ptr, i64, i1)\n"
+                  "declare void @sun_llvm_dict_set_i64_string(ptr, i64, ptr, i64)\n"
+                  "declare void @sun_llvm_dict_set_string_i64(ptr, ptr, i64, i64)\n"
+                  "declare void @sun_llvm_dict_set_string_double(ptr, ptr, i64, double)\n"
+                  "declare void @sun_llvm_dict_set_string_bool(ptr, ptr, i64, i1)\n"
+                  "declare void @sun_llvm_dict_set_string_string(ptr, ptr, i64, ptr, i64)\n"
                   "declare ptr @sun_llvm_list_create_i64()\n"
                   "declare ptr @sun_llvm_list_create_double()\n"
                   "declare ptr @sun_llvm_list_create_bool()\n"
@@ -589,6 +629,34 @@ valid:
             }
             return {Type::string, buffer, total_length};
         }
+        if (expression.kind == Expression::Kind::empty_dictionary) {
+            const auto result = temporary();
+            out_ << "  " << result << " = call ptr @sun_llvm_dict_create()\n";
+            return {Type::empty_dictionary, result};
+        }
+        if (expression.kind == Expression::Kind::dictionary) {
+            const auto result = temporary();
+            out_ << "  " << result << " = call ptr @sun_llvm_dict_create()\n";
+            for (std::size_t i = 0; i + 1 < expression.children.size(); i += 2) {
+                const auto key = emit_expression(expression.children[i]);
+                const auto value = emit_expression(expression.children[i + 1]);
+                const auto key_string = key.type == Type::string || key.type == Type::character;
+                const auto value_string = is_string_like(value.type);
+                if (!key_string && key.type != Type::integer) unsupported("dictionary key type");
+                if (key_string) {
+                    if (value_string) out_ << "  call void @sun_llvm_dict_set_string_string(ptr " << result << ", ptr " << key.operand << ", i64 " << key.string_length << ", ptr " << value.operand << ", i64 " << value.string_length << ")\n";
+                    else if (value.type == Type::integer) out_ << "  call void @sun_llvm_dict_set_string_i64(ptr " << result << ", ptr " << key.operand << ", i64 " << key.string_length << ", i64 " << value.operand << ")\n";
+                    else if (value.type == Type::number) out_ << "  call void @sun_llvm_dict_set_string_double(ptr " << result << ", ptr " << key.operand << ", i64 " << key.string_length << ", double " << value.operand << ")\n";
+                    else if (value.type == Type::boolean) out_ << "  call void @sun_llvm_dict_set_string_bool(ptr " << result << ", ptr " << key.operand << ", i64 " << key.string_length << ", i1 " << value.operand << ")\n";
+                } else {
+                    if (value_string) out_ << "  call void @sun_llvm_dict_set_i64_string(ptr " << result << ", i64 " << key.operand << ", ptr " << value.operand << ", i64 " << value.string_length << ")\n";
+                    else if (value.type == Type::integer) out_ << "  call void @sun_llvm_dict_set_i64_i64(ptr " << result << ", i64 " << key.operand << ", i64 " << value.operand << ")\n";
+                    else if (value.type == Type::number) out_ << "  call void @sun_llvm_dict_set_i64_double(ptr " << result << ", i64 " << key.operand << ", double " << value.operand << ")\n";
+                    else if (value.type == Type::boolean) out_ << "  call void @sun_llvm_dict_set_i64_bool(ptr " << result << ", i64 " << key.operand << ", i1 " << value.operand << ")\n";
+                }
+            }
+            return {expression.type, result};
+        }
         if (expression.kind == Expression::Kind::list) {
             const auto item_type = list_item_type(expression.type);
             const auto suffix = llvm_list_suffix(item_type);
@@ -793,6 +861,18 @@ valid:
                 expression.value == "size" && expression.children.size() == 1) {
                 const auto receiver = emit_expression(expression.children[0]);
                 const auto receiver_type = expression.children[0].type;
+                if (is_dictionary_type(receiver_type)) {
+                    const auto result = temporary();
+                    out_ << "  " << result << " = call i64 @sun_llvm_dict_len(ptr "
+                         << receiver.operand << ")\n";
+                    return {Type::integer, result};
+                }
+                if (receiver_type == Type::bytes) {
+                    const auto result = temporary();
+                    out_ << "  " << result << " = call i64 @sun_llvm_bytes_len(ptr "
+                         << receiver.operand << ")\n";
+                    return {Type::integer, result};
+                }
                 if (is_list_type(receiver_type)) {
                     const auto suffix = llvm_list_suffix(list_item_type(receiver_type));
                     const auto result = temporary();
@@ -800,6 +880,113 @@ valid:
                          << "(ptr " << receiver.operand << ")\n";
                     return {Type::integer, result};
                 }
+            }
+            if (expression.value == "sun_dict_at" && expression.children.size() == 2) {
+                const auto dict = emit_expression(expression.children[0]);
+                const auto key = emit_expression(expression.children[1]);
+                const auto value_type = expression.type;
+                const auto key_string = key.type == Type::string || key.type == Type::character;
+                if (key_string) {
+                    if (value_type == Type::integer) {
+                        const auto result = temporary();
+                        out_ << "  " << result << " = call i64 @sun_llvm_dict_at_string_i64(ptr " << dict.operand << ", ptr " << key.operand << ", i64 " << key.string_length << ")\n";
+                        return {value_type, result};
+                    }
+                    if (value_type == Type::number) {
+                        const auto result = temporary();
+                        out_ << "  " << result << " = call double @sun_llvm_dict_at_string_double(ptr " << dict.operand << ", ptr " << key.operand << ", i64 " << key.string_length << ")\n";
+                        return {value_type, result};
+                    }
+                    if (value_type == Type::boolean) {
+                        const auto result = temporary();
+                        out_ << "  " << result << " = call i1 @sun_llvm_dict_at_string_bool(ptr " << dict.operand << ", ptr " << key.operand << ", i64 " << key.string_length << ")\n";
+                        return {value_type, result};
+                    }
+                    if (is_string_like(value_type)) {
+                        const auto length_slot = temporary();
+                        out_ << "  " << length_slot << " = alloca i64\n";
+                        const auto result = temporary();
+                        out_ << "  " << result << " = call ptr @sun_llvm_dict_at_string_string(ptr " << dict.operand << ", ptr " << key.operand << ", i64 " << key.string_length << ", ptr " << length_slot << ")\n";
+                        const auto length = temporary();
+                        out_ << "  " << length << " = load i64, ptr " << length_slot << '\n';
+                        return {value_type, result, length};
+                    }
+                } else if (key.type == Type::integer) {
+                    if (value_type == Type::integer) {
+                        const auto result = temporary();
+                        out_ << "  " << result << " = call i64 @sun_llvm_dict_at_i64_i64(ptr " << dict.operand << ", i64 " << key.operand << ")\n";
+                        return {value_type, result};
+                    }
+                    if (value_type == Type::number) {
+                        const auto result = temporary();
+                        out_ << "  " << result << " = call double @sun_llvm_dict_at_i64_double(ptr " << dict.operand << ", i64 " << key.operand << ")\n";
+                        return {value_type, result};
+                    }
+                    if (value_type == Type::boolean) {
+                        const auto result = temporary();
+                        out_ << "  " << result << " = call i1 @sun_llvm_dict_at_i64_bool(ptr " << dict.operand << ", i64 " << key.operand << ")\n";
+                        return {value_type, result};
+                    }
+                    if (is_string_like(value_type)) {
+                        const auto length_slot = temporary();
+                        out_ << "  " << length_slot << " = alloca i64\n";
+                        const auto result = temporary();
+                        out_ << "  " << result << " = call ptr @sun_llvm_dict_at_i64_string(ptr " << dict.operand << ", i64 " << key.operand << ", ptr " << length_slot << ")\n";
+                        const auto length = temporary();
+                        out_ << "  " << length << " = load i64, ptr " << length_slot << '\n';
+                        return {value_type, result, length};
+                    }
+                }
+                unsupported("dictionary access type");
+            }
+            if (expression.value == "sun_dict_contains" || expression.value == "sun_dict_remove") {
+                const auto dict = emit_expression(expression.children[0]);
+                const auto key = emit_expression(expression.children[1]);
+                const bool key_string = key.type == Type::string || key.type == Type::character;
+                const auto result = temporary();
+                const auto operation = expression.value == "sun_dict_contains" ? "contains" : "remove";
+                if (key_string) out_ << "  " << result << " = call i1 @sun_llvm_dict_" << operation << "_string(ptr " << dict.operand << ", ptr " << key.operand << ", i64 " << key.string_length << ")\n";
+                else out_ << "  " << result << " = call i1 @sun_llvm_dict_" << operation << "_i64(ptr " << dict.operand << ", i64 " << key.operand << ")\n";
+                return {Type::boolean, result};
+            }
+            if (expression.value == "sun_bytes_from_string" && expression.children.size() == 1) {
+                const auto value = emit_expression(expression.children[0]);
+                const auto result = temporary();
+                out_ << "  " << result << " = call ptr @sun_llvm_bytes_from_string(ptr "
+                     << value.operand << ", i64 " << value.string_length << ")\n";
+                return {Type::bytes, result};
+            }
+            if (expression.value == "sun_bytes_to_string" && expression.children.size() == 1) {
+                const auto value = emit_expression(expression.children[0]);
+                const auto length_slot = temporary();
+                out_ << "  " << length_slot << " = alloca i64\n";
+                const auto result = temporary();
+                out_ << "  " << result << " = call ptr @sun_llvm_bytes_to_string(ptr "
+                     << value.operand << ", ptr " << length_slot << ")\n";
+                const auto length = temporary();
+                out_ << "  " << length << " = load i64, ptr " << length_slot << '\n';
+                return {Type::string, result, length};
+            }
+            if (expression.value == "sun_bytes_at" && expression.children.size() == 2) {
+                const auto bytes = emit_expression(expression.children[0]);
+                auto index = emit_expression(expression.children[1]);
+                if (index.type == Type::integer) {
+                    const auto converted = temporary();
+                    out_ << "  " << converted << " = sitofp i64 " << index.operand << " to double\n";
+                    index = {Type::number, converted};
+                }
+                const auto result = temporary();
+                out_ << "  " << result << " = call i64 @sun_llvm_bytes_at(ptr "
+                     << bytes.operand << ", double " << index.operand << ")\n";
+                return {Type::integer, result};
+            }
+            if (expression.value == "sun_bytes_contains" && expression.children.size() == 2) {
+                const auto bytes = emit_expression(expression.children[0]);
+                const auto value = emit_expression(expression.children[1]);
+                const auto result = temporary();
+                out_ << "  " << result << " = call i1 @sun_llvm_bytes_contains(ptr "
+                     << bytes.operand << ", i64 " << value.operand << ")\n";
+                return {Type::boolean, result};
             }
             if (expression.value == "sun_to_char" && expression.children.size() == 1) {
                 const auto value = emit_expression(expression.children.front());
@@ -1239,12 +1426,62 @@ valid:
                          << ", " << llvm_type(item.type) << " " << item.operand
                          << ")\n";
                 }
+            } else if (indexed->kind == IndexedAssignmentStatement::Kind::dictionary &&
+                       indexed->object.kind == Expression::Kind::call &&
+                       indexed->object.value == "sun_dict_at" &&
+                       indexed->object.children.size() == 2) {
+                const auto dict = emit_expression(indexed->object.children[0]);
+                const auto key = emit_expression(indexed->object.children[1]);
+                const auto value = emit_expression(indexed->value);
+                const bool key_string = key.type == Type::string || key.type == Type::character;
+                if (key_string) {
+                    if (is_string_like(value.type)) out_ << "  call void @sun_llvm_dict_set_string_string(ptr " << dict.operand << ", ptr " << key.operand << ", i64 " << key.string_length << ", ptr " << value.operand << ", i64 " << value.string_length << ")\n";
+                    else if (value.type == Type::integer) out_ << "  call void @sun_llvm_dict_set_string_i64(ptr " << dict.operand << ", ptr " << key.operand << ", i64 " << key.string_length << ", i64 " << value.operand << ")\n";
+                    else if (value.type == Type::number) out_ << "  call void @sun_llvm_dict_set_string_double(ptr " << dict.operand << ", ptr " << key.operand << ", i64 " << key.string_length << ", double " << value.operand << ")\n";
+                    else if (value.type == Type::boolean) out_ << "  call void @sun_llvm_dict_set_string_bool(ptr " << dict.operand << ", ptr " << key.operand << ", i64 " << key.string_length << ", i1 " << value.operand << ")\n";
+                } else if (key.type == Type::integer) {
+                    if (is_string_like(value.type)) out_ << "  call void @sun_llvm_dict_set_i64_string(ptr " << dict.operand << ", i64 " << key.operand << ", ptr " << value.operand << ", i64 " << value.string_length << ")\n";
+                    else if (value.type == Type::integer) out_ << "  call void @sun_llvm_dict_set_i64_i64(ptr " << dict.operand << ", i64 " << key.operand << ", i64 " << value.operand << ")\n";
+                    else if (value.type == Type::number) out_ << "  call void @sun_llvm_dict_set_i64_double(ptr " << dict.operand << ", i64 " << key.operand << ", double " << value.operand << ")\n";
+                    else if (value.type == Type::boolean) out_ << "  call void @sun_llvm_dict_set_i64_bool(ptr " << dict.operand << ", i64 " << key.operand << ", i1 " << value.operand << ")\n";
+                } else unsupported("dictionary key type");
+            } else if (indexed->kind == IndexedAssignmentStatement::Kind::bytes &&
+                       indexed->object.kind == Expression::Kind::call &&
+                       indexed->object.value == "sun_bytes_at" &&
+                       indexed->object.children.size() == 2) {
+                const auto bytes = emit_expression(indexed->object.children[0]);
+                auto index = emit_expression(indexed->object.children[1]);
+                const auto value = emit_expression(indexed->value);
+                if (index.type == Type::integer) {
+                    const auto converted = temporary();
+                    out_ << "  " << converted << " = sitofp i64 " << index.operand
+                         << " to double\n";
+                    index = {Type::number, converted};
+                }
+                out_ << "  call void @sun_llvm_bytes_set(ptr " << bytes.operand
+                     << ", double " << index.operand << ", i64 " << value.operand
+                     << ")\n";
             } else {
                 unsupported("indexed assignment for non-list collection");
             }
         } else if (const auto* member_call =
                        std::get_if<MemberCallStatement>(&statement.node)) {
             if (member_call->method == "clear" &&
+                is_dictionary_type(member_call->receiver.type)) {
+                const auto dict = emit_expression(member_call->receiver);
+                out_ << "  call void @sun_llvm_dict_clear(ptr " << dict.operand << ")\n";
+            } else if (member_call->method == "clear" &&
+                member_call->receiver.type == Type::bytes) {
+                const auto bytes = emit_expression(member_call->receiver);
+                out_ << "  call void @sun_llvm_bytes_clear(ptr " << bytes.operand << ")\n";
+            } else if (member_call->method == "append" &&
+                       member_call->receiver.type == Type::bytes &&
+                       member_call->arguments.size() == 1) {
+                const auto bytes = emit_expression(member_call->receiver);
+                const auto value = emit_expression(member_call->arguments[0]);
+                out_ << "  call void @sun_llvm_bytes_append(ptr " << bytes.operand
+                     << ", i64 " << value.operand << ")\n";
+            } else if (member_call->method == "clear" &&
                 is_list_type(member_call->receiver.type)) {
                 const auto list = emit_expression(member_call->receiver);
                 const auto suffix = llvm_list_suffix(
@@ -1254,6 +1491,12 @@ valid:
             } else {
                 unsupported("member call '" + member_call->method + "'");
             }
+        } else if (const auto* assertion =
+                       std::get_if<AssertStatement>(&statement.node)) {
+            const auto condition = emit_expression(assertion->condition);
+            out_ << "  call void @sun_llvm_assert(i1 " << condition.operand << ")\n";
+        } else if (std::get_if<RaiseStatement>(&statement.node)) {
+            unsupported("raise of custom/typed errors");
         } else if (const auto* control =
                        std::get_if<LoopControlStatement>(&statement.node)) {
             if (loop_targets_.empty()) unsupported("loop control outside a loop");
@@ -1290,6 +1533,15 @@ valid:
             if (const auto* declaration =
                     std::get_if<VariableDeclarationStatement>(&statement.node)) {
                 variables_.emplace(declaration->cpp_name, declaration->type);
+            } else if (const auto* matched =
+                           std::get_if<MatchStatement>(&statement.node)) {
+                for (const auto& match_case : matched->cases) {
+                    if (!match_case.bindings.empty()) {
+                        unsupported("match enum bindings");
+                    }
+                    predeclare_block(match_case.body);
+                }
+                if (matched->else_body) predeclare_block(*matched->else_body);
             } else if (const auto* conditional =
                            std::get_if<IfStatement>(&statement.node)) {
                 for (const auto& branch : conditional->branches) {
@@ -1308,12 +1560,65 @@ valid:
                 if (is_list_type(loop->collection.type)) {
                     variables_.emplace(loop->variable_name,
                                        list_item_type(loop->collection.type));
+                } else if (loop->collection.type == Type::bytes) {
+                    variables_.emplace(loop->variable_name, Type::integer);
                 } else {
                     unsupported("for-in collection type '" + cpp_type(loop->collection.type) + "'");
                 }
                 predeclare_block(loop->body);
             }
         }
+    }
+
+    void emit_match(const MatchStatement& statement) {
+        const auto value = emit_expression(statement.value);
+        const auto end_label = label("match.end");
+        for (const auto& match_case : statement.cases) {
+            if (!match_case.enum_variant_type.empty()) {
+                unsupported("enum match");
+            }
+            const auto pattern = emit_expression(match_case.pattern);
+            const auto matched = temporary();
+            if (value.type == Type::integer || value.type == Type::boolean) {
+                out_ << "  " << matched << " = icmp eq " << llvm_type(value.type)
+                     << ' ' << value.operand << ", " << pattern.operand << '\n';
+            } else if (value.type == Type::number) {
+                out_ << "  " << matched << " = fcmp oeq double "
+                     << value.operand << ", " << pattern.operand << '\n';
+            } else if (value.type == Type::character) {
+                const auto same_length = temporary();
+                const auto same_bytes = temporary();
+                out_ << "  " << same_length << " = icmp eq i64 "
+                     << value.string_length << ", " << pattern.string_length << '\n'
+                     << "  " << matched << " = and i1 " << same_length << ", true\n";
+                out_ << "  " << same_bytes << " = call i32 @memcmp(ptr "
+                     << value.operand << ", ptr " << pattern.operand << ", i64 "
+                     << value.string_length << ")\n";
+                const auto bytes_equal = temporary();
+                out_ << "  " << bytes_equal << " = icmp eq i32 " << same_bytes << ", 0\n";
+                out_ << "  " << matched << " = and i1 " << same_length << ", " << bytes_equal << '\n';
+            } else {
+                unsupported("scalar match type '" + cpp_type(value.type) + "'");
+            }
+            const auto body_label = label("match.body");
+            const auto next_label = label("match.next");
+            out_ << "  br i1 " << matched << ", label %" << body_label
+                 << ", label %" << next_label << '\n'
+                 << body_label << ":\n";
+            terminated_ = false;
+            emit_block(match_case.body);
+            if (!terminated_) out_ << "  br label %" << end_label << '\n';
+            out_ << next_label << ":\n";
+            terminated_ = false;
+        }
+        if (statement.else_body) {
+            emit_block(*statement.else_body);
+            if (!terminated_) out_ << "  br label %" << end_label << '\n';
+        } else {
+            out_ << "  br label %" << end_label << '\n';
+        }
+        out_ << end_label << ":\n";
+        terminated_ = false;
     }
 
     void emit_if(const IfStatement& statement) {
@@ -1411,6 +1716,49 @@ valid:
     }
 
     void emit_for_each(const ForEachStatement& statement) {
+        if (statement.collection.type == Type::bytes) {
+            const auto collection = emit_expression(statement.collection);
+            const auto index_slot = temporary();
+            out_ << "  " << index_slot << " = alloca i64\n"
+                 << "  store i64 0, ptr " << index_slot << '\n';
+            const auto condition_label = label("foreach.bytes.cond");
+            const auto body_label = label("foreach.bytes.body");
+            const auto increment_label = label("foreach.bytes.increment");
+            const auto end_label = label("foreach.bytes.end");
+            out_ << "  br label %" << condition_label << '\n'
+                 << condition_label << ":\n";
+            const auto index = temporary();
+            out_ << "  " << index << " = load i64, ptr " << index_slot << '\n';
+            const auto length = temporary();
+            out_ << "  " << length << " = call i64 @sun_llvm_bytes_len(ptr "
+                 << collection.operand << ")\n";
+            const auto more = temporary();
+            out_ << "  " << more << " = icmp slt i64 " << index << ", " << length << '\n'
+                 << "  br i1 " << more << ", label %" << body_label
+                 << ", label %" << end_label << '\n'
+                 << body_label << ":\n";
+            const auto index_double = temporary();
+            out_ << "  " << index_double << " = sitofp i64 " << index
+                 << " to double\n";
+            const auto item = temporary();
+            out_ << "  " << item << " = call i64 @sun_llvm_bytes_at(ptr "
+                 << collection.operand << ", double " << index_double << ")\n"
+                 << "  store i64 " << item << ", ptr %sun.slot."
+                 << statement.variable_name << '\n';
+            terminated_ = false;
+            loop_targets_.emplace_back(end_label, increment_label);
+            emit_block(statement.body);
+            loop_targets_.pop_back();
+            if (!terminated_) out_ << "  br label %" << increment_label << '\n';
+            out_ << increment_label << ":\n";
+            const auto next = temporary();
+            out_ << "  " << next << " = add i64 " << index << ", 1\n"
+                 << "  store i64 " << next << ", ptr " << index_slot << '\n'
+                 << "  br label %" << condition_label << '\n'
+                 << end_label << ":\n";
+            terminated_ = false;
+            return;
+        }
         if (statement.dictionary || !is_list_type(statement.collection.type)) {
             unsupported("for-in over non-list collections");
         }

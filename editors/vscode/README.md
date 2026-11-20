@@ -30,3 +30,6 @@ function, control-flow, class, exception, and inline C++ templates are also
 available as snippets.
 
 The formatter also recognizes `with` blocks and preserves inline C++ contents.
+This extension provides editor features only; compiler backend options and
+their current feature support are documented in the repository's
+[language guide](../../HOWUSE.md) and [specification](../../SUN-SPEC.md).

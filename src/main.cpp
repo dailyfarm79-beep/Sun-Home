@@ -207,8 +207,13 @@ int main(int argc, char** argv) {
                 auto executable = options.source;
                 executable.replace_extension("");
                 const std::string ir_path = options.output.string();
+#ifndef SUN_SOURCE_DIR
+#define SUN_SOURCE_DIR "."
+#endif
+                const fs::path runtime_source = fs::path(SUN_SOURCE_DIR) / "llvm_runtime.cpp";
                 const std::string command =
                     "clang++ -x ir " + shell_quote(ir_path) +
+                    " -x c++ " + shell_quote(runtime_source.string()) +
                     " -o " + shell_quote(executable.string());
                 const int result = std::system(command.c_str());
                 if (result != 0) {

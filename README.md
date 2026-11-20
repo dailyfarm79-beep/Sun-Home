@@ -67,8 +67,11 @@ A especificacao versionada das regras atualmente implementadas esta em
   `print("Ola, %v", %v=nome)`.
 - Erros de compilacao com arquivo, linha, coluna, trecho destacado e sugestoes.
 - `--check` para validar sintaxe e tipos sem gerar C++.
-- Backend LLVM experimental (`--emit-llvm`/`--llvm`) para um subconjunto de
-  expressoes escalares e controle de fluxo; ainda nao substitui o backend C++.
+- Backend LLVM experimental (`--emit-llvm`/`--llvm`) com escalares, tuplas,
+  combinacoes aninhadas de listas/dicionarios, structs, classes, metodos,
+  enums com `match`, funcoes locais com capturas, `with open`, controle de
+  fluxo, funcoes integradas, `input` tipado, funcoes de `math` e excecoes Sun
+  tipadas; a paridade com o backend C++ ainda esta em andamento.
 
 Comentarios com `#` podem aparecer no fim de uma linha fora de strings. Sun
 ainda esta em prototipo; classes comuns suportam heranca simples sem conversao

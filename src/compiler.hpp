@@ -64,6 +64,7 @@ struct Type {
         list_string,
         list_boolean,
         list_character,
+        list_complex,
         empty_list,
         dictionary,
         empty_dictionary,

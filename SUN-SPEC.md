@@ -1,6 +1,6 @@
 # Sun Language Specification
 
-**Version:** 0.1 (draft)
+**Version:** Unknown (Stable)
 **Status:** describes the language implemented by this repository; not yet a
 stability or compatibility promise.
 
@@ -13,10 +13,11 @@ document and focused conformance tests together.
 
 ## 1. Programs and compilation
 
-A Sun source file is UTF-8 text with the `.su` extension. The compiler checks
-and translates it to C++17; `--check` performs source validation without
-writing generated C++ or invoking the C++ compiler. A compiled program runs as
-a native process with the host process's privileges.
+A Sun source file is UTF-8 text with the `.su` extension. By default, the
+compiler checks and translates it to C++17; an experimental LLVM backend is
+also available through `--emit-llvm` and `--llvm`. `--check` performs source
+validation without writing generated code or invoking the C++ compiler. A
+compiled program runs as a native process with the host process's privileges.
 
 Top-level declarations include functions, custom types, imports, and global
 `inline cpp` blocks. Executable statements belong in functions or the main
@@ -139,7 +140,21 @@ features are not implied by this specification: in particular, Sun currently
 has no generics, inheritance is single-base, tuple indexing must be a
 non-negative integer literal, and `inline cpp` is not safe for untrusted code.
 
-## 8. Conformance and evolution
+## 8. Experimental LLVM backend
+
+The optional LLVM backend supports scalar values, strings, tuples, nested
+lists and dictionaries, structs and classes with fields, constructors,
+methods and simple inheritance, enums and enum `match`, local functions with
+by-reference captures, `with open`, control flow, and typed Sun exceptions
+including `finally`. It remains experimental and does not implement full
+parity with the default C++ backend. In particular, `inline cpp`,
+`cppCatcher`, and the complete `json`, `memory`, and `sys` module APIs are not
+available there. The exact supported cases are covered by the LLVM-specific
+tests and documented in [HOWUSE.md](HOWUSE.md).
+Equality, `contains`, and `remove` on pointer-backed values may use pointer
+identity rather than recursive value equality.
+
+## 9. Conformance and evolution
 
 The compiler's test suite is the executable conformance suite for this draft:
 `make test`. A behavior change is complete only when its specification and

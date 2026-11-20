@@ -405,34 +405,86 @@ std::string scalar_type_name(Type type) {
     }
 }
 
-Type scalar_type_from_name(const std::string& name, std::size_t line) {
+std::vector<std::string> split_type_arguments(const std::string& text) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    int depth = 0;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '[') ++depth;
+        else if (text[i] == ']') --depth;
+        else if (text[i] == ',' && depth == 0) {
+            parts.push_back(trim(text.substr(start, i - start)));
+            start = i + 1;
+        }
+    }
+    parts.push_back(trim(text.substr(start)));
+    return parts;
+}
+
+std::string type_encoding(Type type) {
+    switch (type.kind) {
+    case Type::Kind::string: return "string";
+    case Type::Kind::number: return "number";
+    case Type::Kind::boolean: return "bool";
+    case Type::Kind::integer: return "int";
+    case Type::Kind::character: return "char";
+    case Type::Kind::list_number: return "list[number]";
+    case Type::Kind::list_integer: return "list[int]";
+    case Type::Kind::list_string: return "list[string]";
+    case Type::Kind::list_boolean: return "list[bool]";
+    case Type::Kind::list_character: return "list[char]";
+    case Type::Kind::list_complex: return "list[" + type.name + "]";
+    case Type::Kind::dictionary: return "dict[" + type.name + "]";
+    case Type::Kind::tuple: return "tuple[" + type.name + "]";
+    case Type::Kind::custom: return type.name;
+    default: throw std::logic_error("unsupported nested collection type");
+    }
+}
+
+Type decode_type(const std::string& encoded) {
+    const auto name = trim(encoded);
     if (name == "string" || name == "str") return Type::string;
     if (name == "number") return Type::number;
     if (name == "bool") return Type::boolean;
     if (name == "int") return Type::integer;
     if (name == "char") return Type::character;
-    throw ParseError(line, "expected a scalar type: string, number, bool, int, or char");
+    if (name.rfind("list[", 0) == 0 && name.back() == ']') {
+        return list_type_for(decode_type(name.substr(5, name.size() - 6)));
+    }
+    if (name.rfind("dict[", 0) == 0 && name.back() == ']') {
+        const auto parts = split_type_arguments(name.substr(5, name.size() - 6));
+        if (parts.size() != 2) throw std::logic_error("invalid encoded dictionary type");
+        const auto key = decode_type(parts[0]);
+        const auto value = decode_type(parts[1]);
+        return {Type::Kind::dictionary,
+                type_encoding(key) + "," + type_encoding(value)};
+    }
+    if (name.rfind("tuple[", 0) == 0 && name.back() == ']') {
+        const auto parts = split_type_arguments(name.substr(6, name.size() - 7));
+        std::string tuple_name;
+        for (std::size_t i = 0; i < parts.size(); ++i) {
+            if (i) tuple_name += ',';
+            tuple_name += type_encoding(decode_type(parts[i]));
+        }
+        return {Type::Kind::tuple, tuple_name};
+    }
+    return {Type::Kind::custom, name};
 }
 
 std::pair<Type, Type> dictionary_types(Type type) {
-    const auto separator = type.name.find(',');
-    if (separator == std::string::npos) {
+    const auto parts = split_type_arguments(type.name);
+    if (parts.size() != 2) {
         throw std::logic_error("dictionary type is missing its key or value type");
     }
-    return {scalar_type_from_name(type.name.substr(0, separator), 0),
-            scalar_type_from_name(type.name.substr(separator + 1), 0)};
+    return {decode_type(parts[0]), decode_type(parts[1])};
 }
 
 std::vector<Type> tuple_types(Type type, std::size_t line) {
     if (!is_tuple_type(type)) throw std::logic_error("type is not a tuple");
     std::vector<Type> items;
-    std::size_t start = 0;
-    while (start <= type.name.size()) {
-        const auto comma = type.name.find(',', start);
-        const auto end = comma == std::string::npos ? type.name.size() : comma;
-        items.push_back(scalar_type_from_name(type.name.substr(start, end - start), line));
-        if (comma == std::string::npos) break;
-        start = comma + 1;
+    for (const auto& encoded : split_type_arguments(type.name)) {
+        (void)line;
+        items.push_back(decode_type(encoded));
     }
     return items;
 }
@@ -441,11 +493,14 @@ Type tuple_type_for(const std::vector<Type>& items, std::size_t line) {
     if (items.empty()) throw ParseError(line, "tuples must contain at least one value");
     std::ostringstream name;
     for (std::size_t i = 0; i < items.size(); ++i) {
-        if (!is_tuple_scalar_type(items[i])) {
-            throw ParseError(line, "tuple items must use scalar types");
+        if (items[i] == Type::region || items[i] == Type::pointer ||
+            items[i] == Type::bytes || items[i].kind == Type::Kind::json ||
+            items[i] == Type::empty_list ||
+            items[i] == Type::empty_dictionary) {
+            throw ParseError(line, "tuple item type is not supported");
         }
         if (i) name << ',';
-        name << scalar_type_name(items[i]);
+        name << type_encoding(items[i]);
     }
     return {Type::Kind::tuple, name.str()};
 }
@@ -455,40 +510,36 @@ Type parse_type(const std::string& name, std::size_t line, const Types& types) {
     if (name.rfind("tuple[", 0) == 0 && name.back() == ']') {
         const auto parameters = name.substr(6, name.size() - 7);
         std::vector<Type> items;
-        std::size_t start = 0;
-        while (start <= parameters.size()) {
-            const auto comma = parameters.find(',', start);
-            const auto end = comma == std::string::npos ? parameters.size() : comma;
-            items.push_back(scalar_type_from_name(trim(parameters.substr(start, end - start)),
-                                                  line));
-            if (comma == std::string::npos) break;
-            start = comma + 1;
+        for (const auto& item : split_type_arguments(parameters)) {
+            items.push_back(parse_type(item, line, types));
         }
         return tuple_type_for(items, line);
     }
     if (name.rfind("dict[", 0) == 0 && name.back() == ']') {
         const auto parameters = name.substr(5, name.size() - 6);
-        const auto comma = parameters.find(',');
-        if (comma == std::string::npos || parameters.find(',', comma + 1) != std::string::npos) {
+        const auto parts = split_type_arguments(parameters);
+        if (parts.size() != 2) {
             throw ParseError(line, "dictionary type uses dict[key_type, value_type]");
         }
-        const auto key = scalar_type_from_name(trim(parameters.substr(0, comma)), line);
-        const auto value = scalar_type_from_name(trim(parameters.substr(comma + 1)), line);
+        const auto key = parse_type(parts[0], line, types);
+        const auto value = parse_type(parts[1], line, types);
         if (!is_dict_key_type(key)) {
             throw ParseError(line, "dictionary keys must have type string, int, bool, or char");
         }
-        return {Type::Kind::dictionary, scalar_type_name(key) + "," +
-                                           scalar_type_name(value)};
+        if (value == Type::region || value == Type::pointer ||
+            value == Type::bytes || value.kind == Type::Kind::json ||
+            value == Type::empty_list || value == Type::empty_dictionary) {
+            throw ParseError(line, "dictionary value type is not supported");
+        }
+        return {Type::Kind::dictionary, type_encoding(key) + "," +
+                                           type_encoding(value)};
     }
     if (name.rfind("list[", 0) == 0 && name.back() == ']') {
         const auto item = parse_type(name.substr(5, name.size() - 6), line, types);
-        if (item.kind == Type::Kind::custom || item.kind == Type::Kind::json ||
-            item == Type::region || item == Type::pointer || item == Type::bytes ||
-            is_dictionary_type(item) || is_tuple_type(item) ||
-            item.kind == Type::Kind::list_number || item.kind == Type::Kind::list_integer ||
-            item.kind == Type::Kind::list_string || item.kind == Type::Kind::list_boolean ||
-            item.kind == Type::Kind::list_character) {
-            throw ParseError(line, "lists of custom types or nested lists are not supported");
+        if (item.kind == Type::Kind::json || item == Type::region ||
+            item == Type::pointer || item == Type::bytes ||
+            item == Type::empty_list || item == Type::empty_dictionary) {
+            throw ParseError(line, "list item type is not supported");
         }
         return list_type_for(item);
     }
@@ -508,7 +559,7 @@ Type parse_type(const std::string& name, std::size_t line, const Types& types) {
 bool is_list_type(Type type) {
     return type == Type::list_number || type == Type::list_integer ||
            type == Type::list_string || type == Type::list_boolean ||
-           type == Type::list_character;
+           type == Type::list_character || type.kind == Type::Kind::list_complex;
 }
 
 Type list_type_for(Type item_type) {
@@ -518,7 +569,12 @@ Type list_type_for(Type item_type) {
     case Type::Kind::string: return Type::list_string;
     case Type::Kind::boolean: return Type::list_boolean;
     case Type::Kind::character: return Type::list_character;
-    default: throw std::logic_error("unsupported list item type");
+    default:
+        if (item_type == Type::region || item_type == Type::pointer ||
+            item_type == Type::bytes || item_type.kind == Type::Kind::json) {
+            throw std::logic_error("unsupported list item type");
+        }
+        return {Type::Kind::list_complex, type_encoding(item_type)};
     }
 }
 
@@ -529,6 +585,7 @@ Type list_item_type(Type list_type) {
     case Type::Kind::list_string: return Type::string;
     case Type::Kind::list_boolean: return Type::boolean;
     case Type::Kind::list_character: return Type::character;
+    case Type::Kind::list_complex: return decode_type(list_type.name);
     default: throw std::logic_error("type is not a list");
     }
 }
@@ -1124,11 +1181,11 @@ private:
                         Expression::Kind::empty_list, Type::empty_list, "")));
             }
             const auto item_type = values.front().type;
-            if (is_list_type(item_type) || item_type == Type::region ||
-                item_type == Type::pointer || item_type == Type::bytes ||
-                is_tuple_type(item_type) ||
-                item_type == Type::empty_list) {
-                throw ParseError(line_, "lists cannot contain regions or nested lists");
+            if (item_type == Type::region || item_type == Type::pointer ||
+                item_type == Type::bytes || item_type.kind == Type::Kind::json ||
+                item_type == Type::empty_list ||
+                item_type == Type::empty_dictionary) {
+                throw ParseError(line_, "lists cannot contain this value type");
             }
             std::ostringstream list;
             list << "std::vector<" << cpp_type(item_type) << ">{";
@@ -1159,14 +1216,11 @@ private:
                     if (!is_dict_key_type(key.type)) {
                         throw ParseError(line_, "dictionary keys must have type string, int, bool, or char");
                     }
-                    if (value.type.kind == Type::Kind::custom ||
-                        value.type == Type::region || value.type == Type::pointer ||
-                        value.type == Type::bytes ||
-                        is_list_type(value.type) ||
-                        is_dictionary_type(value.type) || is_tuple_type(value.type) ||
+                    if (value.type == Type::region || value.type == Type::pointer ||
+                        value.type == Type::bytes || value.type.kind == Type::Kind::json ||
                         value.type == Type::empty_list ||
                         value.type == Type::empty_dictionary) {
-                        throw ParseError(line_, "dictionary values must have a supported scalar type");
+                        throw ParseError(line_, "dictionary value type is not supported");
                     }
                     if (!entries.empty() &&
                         (key.type != entries.front().first.type ||
@@ -1189,7 +1243,7 @@ private:
             const auto value_type = entries.front().second.type;
             const Type dictionary_type{
                 Type::Kind::dictionary,
-                scalar_type_name(key_type) + "," + scalar_type_name(value_type)};
+                type_encoding(key_type) + "," + type_encoding(value_type)};
             std::ostringstream dictionary;
             dictionary << cpp_type(dictionary_type) << '{';
             std::vector<Expression> items;
@@ -1733,6 +1787,35 @@ private:
                                     std::move(helper_arguments)));
                 continue;
             }
+            if (is_tuple_type(value.type)) {
+                if (peek().kind != Token::Kind::identifier) {
+                    throw ParseError(line_, "expected a tuple operation after '.'");
+                }
+                const auto operation = take().text;
+                if (operation != "count" && operation != "index") {
+                    throw ParseError(line_, "unknown tuple operation '" + operation + "'");
+                }
+                if (!accept("(")) {
+                    throw ParseError(line_, "tuple operations require parentheses");
+                }
+                if (!allow_function_calls_) {
+                    throw ParseError(line_, "default values cannot call functions");
+                }
+                const auto arguments = parse_expression_arguments();
+                if (arguments.size() != 1 ||
+                    !is_tuple_scalar_type(arguments.front().type)) {
+                    throw ParseError(line_, "tuple." + operation +
+                                                " expects one scalar argument");
+                }
+                value = make_expr_value(
+                    Type::integer,
+                    "sun_tuple_" + operation + "(" + value.cpp + ", " +
+                        arguments.front().cpp + ")",
+                    make_expression(Expression::Kind::member_call, Type::integer,
+                                    operation,
+                                    {value.ast, arguments.front().ast}));
+                continue;
+            }
             if (value.type == Type::bytes) {
                 if (peek().kind != Token::Kind::identifier) {
                     throw ParseError(line_, "expected a bytes operation after '.'");
@@ -1815,7 +1898,7 @@ private:
                                     std::move(helper_arguments)));
                 continue;
             }
-            if (value.type == Type::string || value.type == Type::bytes) {
+            if (value.type == Type::string || value.type == Type::character) {
                 if (peek().kind != Token::Kind::identifier) {
                     throw ParseError(line_, "expected a string operation after '.'");
                 }
@@ -1827,7 +1910,8 @@ private:
                     operation != "count") {
                     throw ParseError(line_, "unknown string operation '" + operation + "'");
                 }
-                if (operation == "count" && value.type != Type::string) {
+                if (operation == "count" && value.type != Type::string &&
+                    value.type != Type::character) {
                     throw ParseError(line_, "string.count is only available on string values");
                 }
                 if (!accept("(")) {
@@ -2095,6 +2179,13 @@ private:
     ExprValue parse_len_call() {
         const auto value = parse_binary(1);
         if (!accept(")")) throw ParseError(line_, "expected ')' after len argument");
+        if (is_tuple_type(value.type)) {
+            const auto length = tuple_types(value.type, line_).size();
+            return make_expr_value(
+                Type::integer, std::to_string(length),
+                make_expression(Expression::Kind::literal, Type::integer,
+                                std::to_string(length)));
+        }
         if (value.type == Type::string || value.type == Type::bytes) {
             return make_expr_value(
                 Type::integer, "static_cast<std::int64_t>(" + value.cpp + ".size())",
@@ -5736,6 +5827,8 @@ std::string cpp_type(Type type) {
     case Type::Kind::list_string: return "std::vector<std::string>";
     case Type::Kind::list_boolean: return "std::vector<bool>";
     case Type::Kind::list_character: return "std::vector<std::string>";
+    case Type::Kind::list_complex:
+        return "std::vector<" + cpp_type(decode_type(type.name)) + ">";
     case Type::Kind::empty_list: return "std::vector<int>";
     case Type::Kind::dictionary: {
         const auto types = dictionary_types(type);

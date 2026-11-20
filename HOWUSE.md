@@ -99,14 +99,37 @@ build/sun llvm-print.su --emit-llvm
 build/sun llvm-print.su --llvm
 ```
 
-O subconjunto atual inclui variaveis escalares (`int`, `number`, `bool` e
-`string`), atribuicao, aritmetica numerica, comparacoes, impressoes e blocos
-`if`, `while`, `break` e `continue`. Funcoes, colecoes, chamadas gerais,
-interpolacao e bibliotecas ainda nao estao implementadas nesse backend e geram
-um erro explicito. Overflow inteiro e divisao invalida terminam o processo via
-trap LLVM; ainda nao podem ser capturados como erros Sun. Use o backend C++ para
-programas que precisem de recursos nao suportados ou da semantica completa de
-tratamento de erros da Sun.
+Ao compilar um arquivo `.ll` manualmente, vincule tambem o runtime:
+
+```sh
+clang++ -x ir llvm-print.ll -x c++ src/llvm_runtime.cpp -o llvm-print
+```
+
+O backend atualmente suporta valores escalares (`int`, `number`, `bool`,
+`string` e `char`), funcoes globais e locais (com captura de variaveis externas
+por referencia), atribuicao, operacoes numericas e de strings, f-strings,
+tuplas, listas e dicionarios homogeneos, inclusive combinacoes aninhadas de
+colecoes e colecoes de tuplas ou tipos customizados. Tuplas suportam
+indexacao literal, igualdade e os metodos `len`, `count` e `index`; strings e
+chars suportam `upper`, `lower`, `trim`, `split`, `replace`, `contains`,
+`starts_with`, `ends_with` e `count`. Listas suportam `append`, `insert`,
+`contains`, `remove`, `pop` e `clear`; dicionarios suportam `contains`,
+`remove`, `keys`, `values`, `get` e `clear`. Tambem ha suporte a `bytes`,
+`print`/`printc`, funcoes integradas numericas e de colecoes, `input` tipado e
+as funcoes de `import math`.
+
+Structs e classes suportam campos, construtores, metodos e heranca simples;
+enums podem carregar valores e ser usados em `match`. O fluxo inclui `if`,
+`while`, `for ... in range(...)`, iteracao sobre colecoes, `break`, `continue`,
+`try`/`except` tipado, excecoes customizadas derivadas de `AnError`,
+`raise` e `finally`. `with open` fecha o arquivo mesmo quando o bloco retorna
+ou lanca uma excecao. `inline cpp`, `cppCatcher` (que captura excecoes de
+inline C++) e as APIs completas dos modulos `json`, `memory` e `sys` nao sao
+suportados pelo backend LLVM. Em valores pointer-backed (colecoes, tuplas e
+tipos customizados), igualdade, `contains` e `remove` ainda podem comparar
+identidade de ponteiros em vez de igualdade profunda. O backend continua
+experimental e nao tem paridade total com o backend C++; consulte os testes
+LLVM para o comportamento atualmente coberto.
 
 Para escrever o C++ gerado na saida padrao:
 

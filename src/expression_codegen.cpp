@@ -82,6 +82,11 @@ std::string emit_expression(const Expression& expression) {
     case Expression::Kind::member:
         return "(" + child(0) + ")." + expression.value;
     case Expression::Kind::member_call:
+        if (!expression.children.empty() &&
+            expression.children.front().type.kind == Type::Kind::tuple &&
+            (expression.value == "count" || expression.value == "index")) {
+            return "sun_tuple_" + expression.value + "(" + arguments(0) + ")";
+        }
         return "(" + child(0) + ")." + expression.value + "(" + arguments(1) + ")";
     case Expression::Kind::list:
     case Expression::Kind::aggregate: {

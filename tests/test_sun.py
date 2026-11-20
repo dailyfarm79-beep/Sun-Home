@@ -93,16 +93,733 @@ class SunCompilerTests(unittest.TestCase):
         )
 
     @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
-    def test_llvm_backend_rejects_unsupported_function_with_clear_error(self):
+    def test_llvm_backend_compiles_functions_and_string_parameters(self):
         result = self.invoke(
-            "llvm-unsupported.su",
-            "def greet()\n"
-            '    print("hello")\n'
+            "llvm-functions.su",
+            "def add(left: int, right: int): int\n"
+            "    return left + right\n"
+            "end\n"
+            "def greet(name: string)\n"
+            "    print(name)\n"
+            "end\n"
+            "def echo(name: string): string\n"
+            "    return name\n"
+            "end\n"
+            "print(add(int(2), int(5)))\n"
+            'greet("hello")\n'
+            'print(echo("world"))\n',
+            "--emit-llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        executable = subprocess.run(
+            [
+                "clang++",
+                "-x",
+                "ir",
+                str(WORK / "llvm-functions.ll"),
+                "-x",
+                "c++",
+                str(ROOT / "src" / "llvm_runtime.cpp"),
+                "-o",
+                str(WORK / "llvm-functions"),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(executable.returncode, 0, executable.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-functions")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(output.stdout, b"7\nhello\nworld\n")
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_structs_classes_and_methods(self):
+        result = self.invoke(
+            "llvm-custom-types.su",
+            "struct Point\n"
+            "    x: int\n"
+            "    y: number\n"
+            "end\n"
+            "class Counter\n"
+            "    value: int\n"
+            "    def init(start: int)\n"
+            "        self.value = start\n"
+            "    end\n"
+            "    def increment(amount: int)\n"
+            "        self.value = self.value + amount\n"
+            "    end\n"
+            "    def current(): int\n"
+            "        return self.value\n"
+            "    end\n"
+            "end\n"
+            "class Named\n"
+            "    name: string\n"
+            "    def init(name: string)\n"
+            "        self.name = name\n"
+            "    end\n"
+            "    def label(): string\n"
+            "        return self.name\n"
+            "    end\n"
+            "end\n"
+            "class Person(Named)\n"
+            "    age: int\n"
+            "    def init(name: string, age: int)\n"
+            "        super.init(name)\n"
+            "        self.age = age\n"
+            "    end\n"
+            "    def years(): int\n"
+            "        return self.age\n"
+            "    end\n"
+            "end\n"
+            "let point: Point = Point(x=int(2), y=3)\n"
+            "let counter: Counter = Counter(int(5))\n"
+            "counter.increment(int(4))\n"
+            'let person: Person = Person("Ada", int(37))\n'
+            "print(point)\n"
+            "print(counter.current())\n"
+            "print(person.label())\n"
+            "print(person.years())\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-custom-types")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(output.stdout, b"Point{x=2, y=3}\n9\nAda\n37\n")
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_enum_match_and_payload_bindings(self):
+        result = self.invoke(
+            "llvm-enum-match.su",
+            "enum Result\n"
+            "    Ok(value: number)\n"
+            "    Error(message: string)\n"
+            "    Pending\n"
+            "end\n"
+            "let success: Result = Result.Ok(42)\n"
+            "let failure: Result = Result.Error(\"bad\")\n"
+            "let pending: Result = Result.Pending\n"
+            "print(success)\n"
+            "match success:\n"
+            "    case Result.Ok(value):\n"
+            "        print(value + 1)\n"
+            "    case Result.Error(message):\n"
+            "        print(message)\n"
+            "    else:\n"
+            '        print("pending")\n'
+            "end\n"
+            "match failure:\n"
+            "    case Result.Ok(value):\n"
+            "        print(value)\n"
+            "    case Result.Error(message):\n"
+            "        print(message)\n"
+            "    else:\n"
+            '        print("pending")\n'
+            "end\n"
+            "match pending:\n"
+            "    case Result.Ok(value):\n"
+            "        print(value)\n"
+            "    case Result.Error(message):\n"
+            "        print(message)\n"
+            "    case Result.Pending:\n"
+            '        print("waiting")\n'
+            "end\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-enum-match")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(output.stdout, b"Ok\n43\nbad\nwaiting\n")
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_local_functions_capture_and_recurse(self):
+        result = self.invoke(
+            "llvm-local-functions.su",
+            "def run(): int\n"
+            "    let total: int = int(0)\n"
+            '    let message: string = ""\n'
+            "    def add(value: int)\n"
+            "        total = total + value\n"
+            "    end\n"
+            "    def append(suffix: string)\n"
+            "        message = message + suffix\n"
+            "    end\n"
+            "    def sum(value: int): int\n"
+            "        if value <= int(0):\n"
+            "            return int(0)\n"
+            "        end\n"
+            "        return value + sum(value - int(1))\n"
+            "    end\n"
+            "    add(int(3))\n"
+            "    add(int(4))\n"
+            '    append("Sun")\n'
+            '    append("!")\n'
+            "    print(message)\n"
+            "    return total + sum(int(3))\n"
+            "end\n"
+            "print(run())\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-local-functions")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(output.stdout, b"Sun!\n13\n")
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_nested_collection_combinations(self):
+        result = self.invoke(
+            "llvm-nested-collections.su",
+            "let matrix: list[list[int]] = [[int(1), int(2)], [int(3), int(4)]]\n"
+            "print(matrix)\n"
+            "print(matrix[1][0])\n"
+            "matrix[0][1] = int(9)\n"
+            "print(matrix[0][1])\n"
+            "struct Point\n"
+            "    x: int\n"
+            "    y: number\n"
+            "end\n"
+            "let points: list[Point] = [Point(x=int(7), y=1)]\n"
+            "print(points)\n"
+            "print(points[0].x)\n"
+            'let by_name: dict[string, list[int]] = {"a": [int(5), int(6)]}\n'
+            "print(by_name)\n"
+            'print(by_name["a"][1])\n'
+            'by_name["b"] = [int(8)]\n'
+            "print(by_name)\n"
+            'print(by_name["b"][0])\n'
+            'let nested: dict[string, dict[int, list[number]]] = {"outer": {int(2): [2.5]}}\n'
+            "print(nested)\n"
+            'print(nested["outer"][int(2)][0])\n'
+            'let tuples: list[tuple[int, string]] = [(int(7), "seven")]\n'
+            "print(tuples)\n"
+            "print(tuples[0][0])\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-nested-collections")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(
+            output.stdout,
+            b"[[1, 2], [3, 4]]\n3\n9\n"
+            b"[Point{x=7, y=1}]\n7\n"
+            b"{a: [5, 6]}\n6\n{a: [5, 6], b: [8]}\n8\n"
+            b"{outer: {2: [2.5]}}\n2.5\n[(7, seven)]\n7\n",
+        )
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_with_open_reads_writes_and_closes(self):
+        target = WORK / "llvm-with-open.txt"
+        result = self.invoke(
+            "llvm-with-open.su",
+            "import io\n"
+            f'let path: string = "{target}"\n'
+            "with open(path, \"w\") as output:\n"
+            '    io.write(output, "hello\\nworld")\n'
+            "end\n"
+            "with open(path, \"r\") as input_file:\n"
+            "    print(io.read(input_file))\n"
+            "end\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-with-open")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(output.stdout, b"hello\nworld\n")
+        self.assertEqual(target.read_bytes(), b"hello\nworld")
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_range_and_short_circuit(self):
+        result = self.invoke(
+            "llvm-range.su",
+            "def boom(): bool\n"
+            "    return int(1) / int(0) == int(0)\n"
+            "end\n"
+            "let limit: int = int(3)\n"
+            "for i in range(1, 4):\n"
+            "    print(i)\n"
+            "end\n"
+            "for i in range(3, 0, -1):\n"
+            "    print(i)\n"
+            "end\n"
+            "print(false and boom())\n"
+            "print(true or boom())\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-range")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(output.stdout, b"1\n2\n3\n3\n2\n1\nfalse\ntrue\n")
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_scalar_fstrings(self):
+        result = self.invoke(
+            "llvm-fstring.su",
+            'let count: int = int(7)\n'
+            'let amount: number = 1.5\n'
+            'let ok: bool = true\n'
+            'let symbol: char = char("🌞")\n'
+            'print(f"count={count} amount={amount} ok={ok} symbol={symbol}")\n',
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-fstring")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(
+            output.stdout,
+            "count=7 amount=1.5 ok=true symbol=🌞\n".encode(),
+        )
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_string_operations(self):
+        result = self.invoke(
+            "llvm-strings.su",
+            'let text: string = "  Sun language  "\n'
+            "let clean: string = text.trim()\n"
+            'print("Hello".upper())\n'
+            'print("Hel" + "lo")\n'
+            "print(clean.upper())\n"
+            "print(clean.lower())\n"
+            'print(clean.replace("Sun", "Moon"))\n'
+            'print(clean.split(" "))\n'
+            'print(clean.contains("language"))\n'
+            'print(clean.starts_with("Sun"))\n'
+            'print(clean.ends_with("language"))\n'
+            'print("aaaa".count("aa"))\n'
+            'print("banana".count("na"))\n',
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-strings")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(
+            output.stdout,
+            b"HELLO\nHello\nSUN LANGUAGE\nsun language\nMoon language\n"
+            b"[Sun, language]\ntrue\ntrue\ntrue\n2\n2\n",
+        )
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_numeric_and_collection_builtins(self):
+        result = self.invoke(
+            "llvm-builtins.su",
+            "let integers: list[int] = [int(-4), int(7), int(2)]\n"
+            "let numbers: list[number] = [1.5, 2.5]\n"
+            "let flags: list[bool] = [true, false]\n"
+            "let no_flags: list[bool] = []\n"
+            "let no_integers: list[int] = []\n"
+            "print(sum(integers))\n"
+            "print(sum(numbers))\n"
+            "print(sum(no_integers))\n"
+            "print(sum([int(1), int(2)]))\n"
+            "print(all(flags))\n"
+            "print(all(no_flags))\n"
+            "print(any(flags))\n"
+            "print(any(no_flags))\n"
+            "print(min(int(-3), 2))\n"
+            "print(max(int(4), 4.5))\n"
+            "print(round(2.5))\n"
+            "print(round(-2.5))\n"
+            "print(abs(-2.75))\n"
+            "print(floor(2.75))\n"
+            "print(ceil(-2.75))\n"
+            "print(trunc(-2.75))\n"
+            "print(round(3.14159, int(2)))\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-builtins")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(
+            output.stdout,
+            "5\n4\n0\n3\nfalse\ntrue\ntrue\nfalse\n-3\n4.5\n3\n-3\n"
+            "2.75\n2\n-2\n-2\n3.14\n",
+        )
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_math_library(self):
+        result = self.invoke(
+            "llvm-math.su",
+            "import math\n"
+            "print(math.acos(1))\n"
+            "print(math.asin(0))\n"
+            "print(math.atan(0))\n"
+            "print(math.atan2(0, 1))\n"
+            "print(math.fmod(7, 4))\n"
+            "print(math.hypot(3, 4))\n"
+            "print(math.log10(100))\n"
+            "print(math.log2(8))\n"
+            "print(math.trunc(2.9))\n"
+            "print(math.sqrt(9))\n"
+            "let exponent: number = 3\n"
+            "print(math.pow(2, exponent))\n"
+            "print(math.factorial(5))\n"
+            "print(math.fatorial(2.5))\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-math")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(
+            output.stdout,
+            "0\n0\n0\n0\n3\n5\n2\n3\n2\n3\n8\n120\n3.32335\n",
+        )
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_typed_input(self):
+        result = self.invoke(
+            "llvm-input.su",
+            'let name: string = input("Name: ")\n'
+            'let age: int = input("Age: ", int)\n'
+            'let ready: bool = input("Ready: ", bool)\n'
+            'let symbol: char = input("Character: ", char)\n'
+            "print(name)\n"
+            "print(age)\n"
+            "print(ready)\n"
+            "print(symbol)\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-input")],
+            cwd=ROOT,
+            input="Sun\n42\ntrue\n🌞\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(output.stdout, "Name: Age: Ready: Character: Sun\n42\ntrue\n🌞\n")
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_try_except_and_finally(self):
+        result = self.invoke(
+            "llvm-exceptions.su",
+            "def return_value(): int\n"
+            "    try:\n"
+            "        return int(7)\n"
+            "    finally:\n"
+            '        print("return cleanup")\n'
+            "    end\n"
+            "end\n"
+            "print(return_value())\n"
+            "try:\n"
+            "    assert(false)\n"
+            "except AnError as error:\n"
+            '    print("caught: " + error)\n'
+            "finally:\n"
+            '    print("exception cleanup")\n'
+            "end\n"
+            "try:\n"
+            "    let quotient: int = int(1) / int(0)\n"
+            "except AnError as error:\n"
+            '    print("arithmetic: " + error)\n'
+            "end\n"
+            "try:\n"
+            "    let invalid: int = int(1.5)\n"
+            "except AnError as error:\n"
+            '    print("conversion: " + error)\n'
+            "end\n"
+            "try:\n"
+            '    print("body")\n'
+            "finally:\n"
+            '    print("normal cleanup")\n'
+            "end\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-exceptions")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(
+            output.stdout,
+            "return cleanup\n7\ncaught: assertion failed\nexception cleanup\n"
+            "arithmetic: int division by zero\n"
+            "conversion: int() requires an in-range whole number\n"
+            "body\nnormal cleanup\n",
+        )
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_runs_finally_before_unhandled_exception(self):
+        result = self.invoke(
+            "llvm-unhandled-exception.su",
+            "try:\n"
+            "    let quotient: int = int(1) / int(0)\n"
+            "finally:\n"
+            '    print("unhandled cleanup")\n'
             "end\n",
             "--emit-llvm",
         )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("LLVM backend does not yet support functions", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ir = (WORK / "llvm-unhandled-exception.ll").read_text(encoding="utf-8")
+        exception_path = ir.index("sun.try.exception")
+        cleanup_output = ir.index("call i64 @fwrite", exception_path)
+        resume = ir.index("resume { ptr, i32 }", exception_path)
+        self.assertLess(cleanup_output, resume)
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_list_mutation_and_iteration(self):
+        result = self.invoke(
+            "llvm-list.su",
+            "let values: list[int] = [int(1), int(2), int(2)]\n"
+            "print(values.contains(int(2)))\n"
+            "values.insert(int(1), int(9))\n"
+            "values[int(0)] = int(7)\n"
+            "let removed: bool = values.remove(int(2))\n"
+            "print(removed)\n"
+            "let popped: int = values.pop(int(1))\n"
+            "print(popped)\n"
+            "for value in values:\n"
+            "    print(value)\n"
+            "end\n"
+            "values.clear()\n"
+            "print(len(values))\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-list")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(output.stdout, b"true\ntrue\n9\n7\n2\n0\n")
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_dictionary_operations_and_iteration(self):
+        result = self.invoke(
+            "llvm-dict.su",
+            'let ages: dict[string, int] = {"Ada": int(37), "Lin": int(31)}\n'
+            "print(ages)\n"
+            'print(ages.get("Ada", int(0)))\n'
+            'print(ages.get("Grace", int(0)))\n'
+            "print(ages.keys())\n"
+            "print(ages.values())\n"
+            "for name in ages:\n"
+            "    print(name)\n"
+            "end\n"
+            "let ranks: dict[int, int] = {int(10): int(1), int(2): int(2)}\n"
+            "for rank in ranks:\n"
+            "    print(rank)\n"
+            "end\n"
+            "let flags: dict[bool, string] = {false: \"off\", true: \"on\"}\n"
+            "print(flags)\n"
+            "print(flags[true])\n"
+            "print(flags.get(false, \"fallback\"))\n"
+            "print(flags.keys())\n"
+            "for flag in flags:\n"
+            "    print(flag)\n"
+            "end\n"
+            "let empty: dict[string, int] = {}\n"
+            "print(len(empty))\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-dict")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(
+            output.stdout,
+            b"{Ada: 37, Lin: 31}\n37\n0\n[Ada, Lin]\n[37, 31]\nAda\nLin\n2\n10\n{false: off, true: on}\non\noff\n[false, true]\nfalse\ntrue\n0\n",
+        )
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_bytes_conversions_and_mutation(self):
+        result = self.invoke(
+            "llvm-bytes.su",
+            'let raw: bytes = bytes.from_string("ABC")\n'
+            "raw[int(1)] = int(120)\n"
+            "raw.append(int(33))\n"
+            "print(raw.contains(int(120)))\n"
+            "let values: list[int] = bytes.to_list(raw)\n"
+            "print(values)\n"
+            "let copied: bytes = bytes.from_list(values)\n"
+            "print(bytes.to_string(copied))\n"
+            "print(copied)\n"
+            "let empty: bytes = bytes.from_list([])\n"
+            "print(len(empty))\n"
+            "for byte in raw:\n"
+            "    print(byte)\n"
+            "end\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-bytes")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(output.stdout, b"true\n[65, 120, 67, 33]\nAxC!\nAxC!\n0\n65\n120\n67\n33\n")
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_printc(self):
+        result = self.invoke(
+            "llvm-printc.su",
+            'printc("Sol ☀", "red")\n',
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-printc")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(output.stdout, "\x1b[31mSol ☀\x1b[0m\n".encode())
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_unicode_char_values(self):
+        result = self.invoke(
+            "llvm-char.su",
+            'let source: string = "🌞"\n'
+            "let symbol: char = char(source)\n"
+            "def echo(value: char): char\n"
+            "    return value\n"
+            "end\n"
+            "print(symbol)\n"
+            "print(echo(symbol))\n"
+            'print(char("é") == char("é"))\n'
+            'print(char("A") != char("B"))\n'
+            'let lower: char = char("a")\n'
+            "print(lower.upper())\n"
+            'print(lower.count("a"))\n',
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-char")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(
+            output.stdout,
+            "🌞\n🌞\ntrue\ntrue\nA\n1\n".encode(),
+        )
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_catches_typed_and_custom_errors(self):
+        result = self.invoke(
+            "llvm-custom-errors.su",
+            "class ValidationError(AnError)\n"
+            "end\n"
+            "class OtherError(AnError)\n"
+            "end\n"
+            'let validation: ValidationError = ValidationError("invalid input")\n'
+            "try:\n"
+            "    raise validation\n"
+            "except ValidationError as message:\n"
+            '    print("specific: " + message)\n'
+            "except AnError:\n"
+            '    print("wrong handler")\n'
+            "finally:\n"
+            '    print("typed cleanup")\n'
+            "end\n"
+            "try:\n"
+            '    raise OtherError("other error")\n'
+            "except ValidationError:\n"
+            '    print("wrong type")\n'
+            "except OtherError as message:\n"
+            '    print("other: " + message)\n'
+            "end\n"
+            "try:\n"
+            '    raise ValidationError("base handler")\n'
+            "except AnError as message:\n"
+            '    print("base: " + message)\n'
+            "end\n"
+            "try:\n"
+            "    try:\n"
+            '        raise OtherError("nested error")\n'
+            "    except ValidationError:\n"
+            '        print("wrong nested handler")\n'
+            "    end\n"
+            "except AnError as message:\n"
+            '    print("outer: " + message)\n'
+            "end\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-custom-errors")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(
+            output.stdout,
+            "specific: invalid input\ntyped cleanup\n"
+            "other: other error\nbase: base handler\nouter: nested error\n",
+        )
 
     def test_check_validates_without_creating_output(self):
         result = self.invoke(
@@ -289,6 +1006,9 @@ class SunCompilerTests(unittest.TestCase):
             "print(swapped)\n"
             "let singleton: tuple[bool] = (true,)\n"
             "print(singleton)\n"
+            "print(len(pair))\n"
+            "print(pair.count(int(42)))\n"
+            "print(pair.index(\"Ada\"))\n"
             'print(pair == (int(42), "Ada"))\n',
             "--compile",
         )
@@ -303,7 +1023,7 @@ class SunCompilerTests(unittest.TestCase):
         self.assertEqual(executable.returncode, 0, executable.stderr)
         self.assertEqual(
             executable.stdout,
-            "(42, Ada)\n42\nAda\n(Ada, 42)\n(true,)\ntrue\n",
+            "(42, Ada)\n42\nAda\n(Ada, 42)\n(true,)\n2\n1\n1\ntrue\n",
         )
 
         invalid_index = self.invoke(
@@ -316,6 +1036,53 @@ class SunCompilerTests(unittest.TestCase):
         self.assertNotEqual(invalid_index.returncode, 0)
         self.assertIn("tuple index must be a non-negative integer literal",
                       invalid_index.stderr)
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_tuples_and_tuple_methods(self):
+        result = self.invoke(
+            "llvm-tuples.su",
+            "def swap(pair: tuple[int, string]): tuple[string, int]\n"
+            "    return (pair[1], pair[0])\n"
+            "end\n"
+            'let pair: tuple[int, string, int] = (int(42), "Ada", int(42))\n'
+            "let swapped: tuple[string, int] = swap((int(7), \"Lin\"))\n"
+            "let embedded: tuple[string] = (\"A\\0B\",)\n"
+            "let flag: tuple[bool] = (true,)\n"
+            "print(pair)\n"
+            "print(pair[0])\n"
+            "print(pair[1])\n"
+            "print(swapped)\n"
+            "print(len(pair))\n"
+            "print(pair.count(int(42)))\n"
+            "print(pair.count(\"Ada\"))\n"
+            "print(pair.index(int(42)))\n"
+            "print(pair.index(\"Ada\"))\n"
+            "print(embedded)\n"
+            "print(embedded.count(\"A\\0B\"))\n"
+            "print(flag)\n"
+            'print(pair == (int(42), "Ada", int(42)))\n'
+            "try:\n"
+            '    let missing: int = pair.index("missing")\n'
+            "except AnError as error:\n"
+            '    print("missing: " + error)\n'
+            "end\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-tuples")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(
+            output.stdout,
+            "(42, Ada, 42)\n42\nAda\n(Lin, 7)\n3\n2\n1\n0\n1\n"
+            "(A\0B,)\n1\n(true,)\ntrue\n"
+            "missing: tuple.index: value not found\n",
+        )
 
     def test_istype_recognizes_collection_categories(self):
         result = self.invoke(
@@ -3227,6 +3994,8 @@ class SunCompilerTests(unittest.TestCase):
             "print(f\"{quotient} {promoted} {initial}\")\n"
             "print(istype(first, int))\n"
             "print(istype(initial, char))\n"
+            "print(initial.lower())\n"
+            'print(initial.count("A"))\n'
             "try:\n"
             "    let overflow: int = int(9223372036854774784.0) + int(2048)\n"
             "catch error:\n"
@@ -3245,7 +4014,7 @@ class SunCompilerTests(unittest.TestCase):
         self.assertEqual(executable.returncode, 0, executable.stderr)
         self.assertEqual(
             executable.stdout,
-            "3 7.5 A\ntrue\ntrue\nint arithmetic overflow\n",
+            "3 7.5 A\ntrue\ntrue\na\n1\nint arithmetic overflow\n",
         )
 
     def test_char_supports_unicode_codepoints(self):

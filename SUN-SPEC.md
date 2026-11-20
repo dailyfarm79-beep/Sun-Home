@@ -1,6 +1,6 @@
 # Sun Language Specification
 
-**Version:** 0.1 (draft)
+**Version:** Unknown (Stable)
 **Status:** describes the language implemented by this repository; not yet a
 stability or compatibility promise.
 

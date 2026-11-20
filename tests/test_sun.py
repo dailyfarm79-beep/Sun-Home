@@ -210,6 +210,93 @@ class SunCompilerTests(unittest.TestCase):
         self.assertEqual(output.stdout, b"true\ntrue\n9\n7\n2\n0\n")
 
     @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_dictionary_operations_and_iteration(self):
+        result = self.invoke(
+            "llvm-dict.su",
+            'let ages: dict[string, int] = {"Ada": int(37), "Lin": int(31)}\n'
+            "print(ages)\n"
+            'print(ages.get("Ada", int(0)))\n'
+            'print(ages.get("Grace", int(0)))\n'
+            "print(ages.keys())\n"
+            "print(ages.values())\n"
+            "for name in ages:\n"
+            "    print(name)\n"
+            "end\n"
+            "let ranks: dict[int, int] = {int(10): int(1), int(2): int(2)}\n"
+            "for rank in ranks:\n"
+            "    print(rank)\n"
+            "end\n"
+            "let flags: dict[bool, string] = {false: \"off\", true: \"on\"}\n"
+            "print(flags)\n"
+            "print(flags[true])\n"
+            "print(flags.get(false, \"fallback\"))\n"
+            "print(flags.keys())\n"
+            "for flag in flags:\n"
+            "    print(flag)\n"
+            "end\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-dict")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(
+            output.stdout,
+            b"{Ada: 37, Lin: 31}\n37\n0\n[Ada, Lin]\n[37, 31]\nAda\nLin\n2\n10\n{false: off, true: on}\non\noff\n[false, true]\nfalse\ntrue\n",
+        )
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_bytes_conversions_and_mutation(self):
+        result = self.invoke(
+            "llvm-bytes.su",
+            'let raw: bytes = bytes.from_string("ABC")\n'
+            "raw[int(1)] = int(120)\n"
+            "raw.append(int(33))\n"
+            "print(raw.contains(int(120)))\n"
+            "let values: list[int] = bytes.to_list(raw)\n"
+            "print(values)\n"
+            "let copied: bytes = bytes.from_list(values)\n"
+            "print(bytes.to_string(copied))\n"
+            "print(copied)\n"
+            "let empty: bytes = bytes.from_list([])\n"
+            "print(len(empty))\n"
+            "for byte in raw:\n"
+            "    print(byte)\n"
+            "end\n",
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-bytes")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(output.stdout, b"true\n[65, 120, 67, 33]\nAxC!\nAxC!\n0\n65\n120\n67\n33\n")
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
+    def test_llvm_backend_compiles_printc(self):
+        result = self.invoke(
+            "llvm-printc.su",
+            'printc("Sol ☀", "red")\n',
+            "--llvm",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = subprocess.run(
+            [str(WORK / "llvm-printc")],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(output.stdout, "\x1b[31mSol ☀\x1b[0m\n".encode())
+
+    @unittest.skipUnless(shutil.which("clang++"), "clang++ is required for LLVM tests")
     def test_llvm_backend_compiles_unicode_char_values(self):
         result = self.invoke(
             "llvm-char.su",
